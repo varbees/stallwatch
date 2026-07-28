@@ -1,20 +1,27 @@
-//! CLI front-end. Deliberately thin: every bit of logic lives in the library,
-//! so a D-Bus daemon, a GNOME extension or a C consumer gets the same answers
-//! from the same code path rather than a reimplementation.
+//! CLI front-end. Deliberately thin: all logic lives in the library, so the
+//! daemon, a future D-Bus service and a C consumer get the same answers from
+//! the same code path rather than three implementations that drift apart.
 
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
 use std::time::Duration;
-use stallwatch::{Report, Severity};
+
+use stallwatch::ipc::socket_path;
 
 const USAGE: &str = "\
 stallwatch — name the unit that is stalling your Linux system
 
 USAGE:
   stallwatch [--watch] [--json] [--window MS]
+  stallwatch --since SECS [--json]
 
 OPTIONS:
-  --watch        refresh continuously until Ctrl-C
-  --json         machine-readable output
   --window MS    sampling window in milliseconds (default 1000)
+  --watch        refresh continuously until Ctrl-C
+  --since SECS   what happened over the last SECS seconds
+                 (requires stallwatchd; a freeze is over by the time you
+                  can type, so live sampling cannot answer this)
+  --json         machine-readable output
   -h, --help     this text
 
 Reads /proc and /sys as the invoking user. No privileges required.
@@ -30,12 +37,31 @@ fn main() {
 
     let json = args.iter().any(|a| a == "--json");
     let watch = args.iter().any(|a| a == "--watch");
-    let window_ms: u64 = args
-        .iter()
-        .position(|a| a == "--window")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1000);
+    let num = |name: &str| -> Option<u64> {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .and_then(|v| v.parse().ok())
+    };
+
+    if let Some(secs) = num("--since") {
+        match query_daemon(secs, json) {
+            Ok(reply) => print!("{reply}"),
+            Err(e) => {
+                eprintln!(
+                    "stallwatch: cannot reach stallwatchd ({e}).\n\
+                     \n\
+                     History needs the daemon running — a freeze is over by the time\n\
+                     you can open a terminal, so it has to already be recording.\n\
+                     \n\
+                       stallwatchd &                       # try it now\n\
+                       systemctl --user enable --now stallwatchd   # keep it running"
+                );
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
 
     if !stallwatch::psi_available() {
         eprintln!(
@@ -45,6 +71,8 @@ fn main() {
         );
         std::process::exit(1);
     }
+
+    let window_ms = num("--window").unwrap_or(1000);
 
     loop {
         let report = stallwatch::observe(Duration::from_millis(window_ms));
@@ -56,7 +84,7 @@ fn main() {
         if json {
             println!("{}", report.to_json());
         } else {
-            print_human(&report);
+            print!("{}", report.to_text());
         }
 
         if !watch {
@@ -65,33 +93,28 @@ fn main() {
     }
 }
 
-fn print_human(r: &Report) {
-    let secs = r.window_usec as f64 / 1e6;
+/// Ask the daemon for history.
+///
+/// The daemon renders both formats server-side, so this client needs no JSON
+/// parser — which is what keeps the whole crate dependency-free.
+fn query_daemon(secs: u64, json: bool) -> std::io::Result<String> {
+    let path = socket_path();
+    let stream = UnixStream::connect(&path)?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
 
-    if r.stalls.is_empty() {
-        println!("No significant stalls in the last {secs:.1}s. System is responsive.");
-    } else {
-        println!("Over the last {secs:.1}s, these units stalled the system:\n");
-        for s in &r.stalls {
-            println!(
-                "  {:>6.1}%  {:<7} {}  — frozen {:.0}ms waiting on {}",
-                s.pressure_pct,
-                s.resource.to_string(),
-                s.unit,
-                s.delta_usec as f64 / 1000.0,
-                s.resource
-            );
-        }
-        println!("\n  worst cgroup: {}", r.stalls[0].cgroup);
+    let fmt = if json { "json" } else { "text" };
+    {
+        let mut w = &stream;
+        writeln!(w, "SINCE {secs} {fmt}")?;
+        w.flush()?;
     }
 
-    for w in &r.warnings {
-        let marker = match w.severity {
-            Severity::Critical => "!!",
-            Severity::Warn => " !",
-            Severity::Note => " ·",
-        };
-        let tag = if w.transient { " [transient]" } else { "" };
-        println!("\n  {marker} {}{tag}: {}", w.source, w.message);
+    let mut out = String::new();
+    let mut reader = BufReader::new(&stream);
+    let mut line = String::new();
+    while reader.read_line(&mut line)? > 0 {
+        out.push_str(&line);
+        line.clear();
     }
+    Ok(out)
 }

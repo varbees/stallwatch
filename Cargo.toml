@@ -24,3 +24,7 @@ path = "src/bin/stallwatch.rs"
 opt-level = "s"
 lto = true
 strip = true
+
+[[bin]]
+name = "stallwatchd"
+path = "src/bin/stallwatchd.rs"

@@ -40,8 +40,10 @@ use std::time::Duration;
 
 pub mod attribution;
 pub mod cgroup;
+pub mod ipc;
 pub mod pathology;
 pub mod psi;
+pub mod ring;
 
 pub use pathology::{Severity, Warning};
 pub use psi::{PsiKind, Resource};
@@ -67,6 +69,15 @@ pub struct Stall {
     pub delta_usec: u64,
     /// `delta_usec / window_usec * 100`.
     pub pressure_pct: f64,
+    /// Worst single sampling tick inside the window.
+    ///
+    /// Load-bearing for anything aggregated. A two-second total freeze inside a
+    /// sixty-second window averages to ~3%, which reads as "nothing happened" —
+    /// the same damping that makes the kernel's own `avg300` useless for
+    /// catching short stalls. The peak preserves the event.
+    ///
+    /// For a single-tick observation this equals `pressure_pct`.
+    pub peak_pct: f64,
 }
 
 /// The result of one observation window.
@@ -127,13 +138,14 @@ impl Report {
         for (i, st) in self.stalls.iter().enumerate() {
             s.push_str(&format!(
                 "    {{\"unit\": {}, \"cgroup\": {}, \"resource\": \"{}\", \"type\": \"{}\", \
-                 \"delta_usec\": {}, \"pressure_pct\": {:.2}}}{}\n",
+                 \"delta_usec\": {}, \"pressure_pct\": {:.2}, \"peak_pct\": {:.2}}}{}\n",
                 json_str(&st.unit),
                 json_str(&st.cgroup),
                 st.resource,
                 st.kind,
                 st.delta_usec,
                 st.pressure_pct,
+                st.peak_pct,
                 if i + 1 == self.stalls.len() { "" } else { "," }
             ));
         }
@@ -150,6 +162,59 @@ impl Report {
         }
         s.push_str("  ]\n}");
         s
+    }
+}
+
+impl Report {
+    /// Render for a human reading a terminal.
+    ///
+    /// Lives in the library, not the CLI: the daemon renders this too, so a
+    /// client with no JSON parser can still ask for readable output, and every
+    /// frontend shows identical wording rather than three drifting copies.
+    pub fn to_text(&self) -> String {
+        let mut o = String::new();
+        let secs = self.window_usec as f64 / 1e6;
+
+        if self.stalls.is_empty() {
+            o.push_str(&format!(
+                "No significant stalls in the last {secs:.1}s. System is responsive.\n"
+            ));
+        } else {
+            o.push_str(&format!(
+                "Over the last {secs:.1}s, these units stalled the system:\n\n"
+            ));
+            for s in &self.stalls {
+                // Show the peak only when it differs meaningfully from the
+                // average, i.e. on aggregated history. On a single tick they
+                // are equal and printing both is just noise.
+                let peak = if s.peak_pct - s.pressure_pct > 0.5 {
+                    format!("   (worst tick {:.0}%)", s.peak_pct)
+                } else {
+                    String::new()
+                };
+                o.push_str(&format!(
+                    "  {:>6.1}%  {:<7} {}  — frozen {:.0}ms waiting on {}{}\n",
+                    s.pressure_pct,
+                    s.resource.to_string(),
+                    s.unit,
+                    s.delta_usec as f64 / 1000.0,
+                    s.resource,
+                    peak
+                ));
+            }
+            o.push_str(&format!("\n  worst cgroup: {}\n", self.stalls[0].cgroup));
+        }
+
+        for w in &self.warnings {
+            let marker = match w.severity {
+                Severity::Critical => "!!",
+                Severity::Warn => " !",
+                Severity::Note => " \u{b7}",
+            };
+            let tag = if w.transient { " [transient]" } else { "" };
+            o.push_str(&format!("\n  {marker} {}{tag}: {}\n", w.source, w.message));
+        }
+        o
     }
 }
 
@@ -202,6 +267,7 @@ mod tests {
                 kind: PsiKind::Full,
                 delta_usec: 250_000,
                 pressure_pct: 25.0,
+                peak_pct: 40.0,
             }],
             warnings: vec![],
         };
@@ -209,5 +275,6 @@ mod tests {
         assert!(j.contains("\"resource\": \"io\""), "{j}");
         assert!(j.contains("\"type\": \"full\""), "{j}");
         assert!(j.contains("\"pressure_pct\": 25.00"), "{j}");
+        assert!(j.contains("\"peak_pct\": 40.00"), "{j}");
     }
 }

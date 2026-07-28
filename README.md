@@ -73,6 +73,46 @@ stallwatch --window 3000      # three-second window
 stallwatch --json             # machine-readable
 ```
 
+### "What just happened?"
+
+A freeze is over by the time you can open a terminal and type. Live sampling
+structurally cannot answer the question people actually ask, so `stallwatchd`
+records continuously into a bounded ring and `--since` queries it:
+
+```console
+$ stallwatch --since 45
+Over the last 45.0s, these units stalled the system:
+
+    78.5%  io      com.mitchellh.ghostty  — frozen 22476ms waiting on io   (worst tick 91%)
+    12.4%  io      systemd-journald       — frozen  3553ms waiting on io   (worst tick 17%)
+     0.2%  memory  whole system           — frozen    59ms waiting on memory  (worst tick 11%)
+```
+
+That last row is why the daemon reports **peak per tick** and not just the
+average. 0.2% reads as "nothing happened"; the 11% peak says there was a real
+moment of memory pressure. Averaging over a long window destroys short events —
+the same damping that makes the kernel's own `avg300` useless for catching
+freezes. Ranking and noise-filtering are both done on the peak for this reason.
+
+```sh
+stallwatchd &                                  # foreground trial
+cp systemd/stallwatchd.service ~/.config/systemd/user/
+systemctl --user enable --now stallwatchd      # keep it running
+```
+
+~2.6 MB resident, one frame per second, 300 seconds of history by default.
+It runs at idle IO priority and `Nice=10`: a tool that exists to observe
+contention must never cause any.
+
+The socket is `$XDG_RUNTIME_DIR/stallwatch.sock`, mode `0600`, and the protocol
+is one line in and one document out — `socat` is a valid client:
+
+```console
+$ printf 'SINCE 60 text\n' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/stallwatch.sock
+$ printf 'PING\n'          | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/stallwatch.sock
+PONG
+```
+
 ## As a library
 
 The engine is a library; the CLI is one thin client of it. The JSON above *is* the schema, and it is deliberately aligned with the vocabulary Kubernetes and cAdvisor already settled on (`container_pressure_*`, where `waiting` is PSI `some` and `stalled` is PSI `full`).
@@ -105,14 +145,18 @@ That heuristic would also have fired on every healthy drive of the same family. 
 
 - **cgroup v2 and systemd only.** No v1 fallback.
 - **Attribution stops at the cgroup.** systemd puts a terminal and all its shell children in one cgroup, so a `du` command inside your terminal is reported as the terminal. Per-process drill-down via `/proc/<pid>/stat` field 42 (`delayacct_blkio_ticks`) is planned.
-- **One-shot.** A freeze is over by the time you type the command. A resident daemon with a ring buffer — so you can ask "what just happened" — is the next major piece.
+- **No D-Bus yet.** The daemon speaks a Unix socket. D-Bus is the right
+  integration surface — it is what lets KRunner, GNOME and waybar consume this
+  without inheriting a Rust build dependency — but every Rust D-Bus crate is a
+  dependency, and zero dependencies is what keeps the engine reducible to a C
+  ABI. A D-Bus frontend will be another client of the same daemon.
 - **Thermal checks cannot see throttle counters**, which need root. Hence the deliberate caution above.
 
 ## Roadmap
 
-1. Daemon with a 60-second ring buffer — turns "watch and hope it recurs" into "tell me what just happened"
+1. ~~Daemon with a ring buffer~~ — done
 2. D-Bus interface, so adapters (KRunner, GNOME, waybar, Vicinae) are thin and no one inherits a Rust build dependency
-3. Per-process drill-down inside the guilty cgroup
+3. Per-process drill-down inside the guilty cgroup, via `/proc/<pid>/stat` field 42 (`delayacct_blkio_ticks`)
 4. More pathologies: zram/zswap saturation, ZFS ARC pressure, dm-thin exhaustion, NVMe SMART wear
 
 ## License

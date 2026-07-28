@@ -87,6 +87,8 @@ pub fn collect(window: Duration) -> (Vec<Stall>, u64) {
                 kind,
                 delta_usec: d,
                 pressure_pct: pct,
+                // Single tick: the window IS the peak.
+                peak_pct: pct,
             });
         }
     }

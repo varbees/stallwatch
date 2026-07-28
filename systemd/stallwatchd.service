@@ -1,0 +1,35 @@
+[Unit]
+Description=stallwatch stall recorder
+Documentation=https://github.com/varbees/stallwatch
+# Deliberately a USER unit. stallwatchd reads /proc and /sys as the invoking
+# user and has no business running as root — a diagnostic that needs privileges
+# is a diagnostic people don't install.
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/stallwatchd --tick 1000 --history 300
+Restart=on-failure
+RestartSec=5
+
+# It exists to observe contention, so it must never cause any. Idle IO priority
+# and low CPU weight mean the sampler yields to everything the user is doing;
+# reading pressure files costs microseconds, so this loses nothing.
+IOSchedulingClass=idle
+Nice=10
+CPUWeight=10
+
+# Read-only introspection: no reason to reach anything else.
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=true
+LockPersonality=true
+RestrictRealtime=true
+# The socket lives in $XDG_RUNTIME_DIR, which stays writable under
+# ProtectSystem=strict.
+RuntimeDirectoryPreserve=yes
+
+[Install]
+WantedBy=default.target
