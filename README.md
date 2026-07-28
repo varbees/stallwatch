@@ -148,6 +148,28 @@ $ printf 'PING\n'          | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/stallwatch.so
 PONG
 ```
 
+### Varlink (systemd-native IPC)
+
+The daemon also speaks [Varlink](https://varlink.org) on
+`$XDG_RUNTIME_DIR/stallwatch.varlink`, so it is queryable by `varlinkctl`,
+which ships with systemd — no bespoke client:
+
+```console
+$ varlinkctl call $XDG_RUNTIME_DIR/stallwatch.varlink \
+      dev.stallwatch.Monitor.GetHistory '{"seconds":30}'
+
+$ varlinkctl introspect $XDG_RUNTIME_DIR/stallwatch.varlink dev.stallwatch.Monitor
+```
+
+**Why Varlink and not D-Bus.** D-Bus was the obvious choice and it was the
+wrong one: speaking it means either a `zbus` dependency and its crate graph, or
+hand-rolling SASL auth and type marshalling. The first breaks the zero-dep
+property that keeps this engine reducible to a C ABI; the second is a lot of
+security-sensitive code to own. Varlink is JSON objects separated by NUL bytes
+over a Unix socket — no handshake, no marshalling, no dependency. systemd 258
+ships dozens of `io.systemd.*` Varlink services, so this is the direction the
+platform is already moving.
+
 ## As a library
 
 The engine is a library; the CLI is one thin client of it. The JSON above *is* the schema, and it is deliberately aligned with the vocabulary Kubernetes and cAdvisor already settled on (`container_pressure_*`, where `waiting` is PSI `some` and `stalled` is PSI `full`).
@@ -193,7 +215,7 @@ That heuristic would also have fired on every healthy drive of the same family. 
 ## Roadmap
 
 1. ~~Daemon with a ring buffer~~ — done
-2. D-Bus interface, so adapters (KRunner, GNOME, waybar, Vicinae) are thin and no one inherits a Rust build dependency
+2. ~~D-Bus interface~~ — solved with Varlink instead, at zero dependency cost
 3. ~~Per-process drill-down~~ — done
 4. More pathologies: zram/zswap saturation, ZFS ARC pressure, dm-thin exhaustion, NVMe SMART wear
 

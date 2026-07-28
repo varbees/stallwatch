@@ -12,7 +12,8 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use stallwatch::ipc::{socket_path, Format, Request};
+use stallwatch::ipc::{socket_path, varlink_socket_path, Format, Request};
+use stallwatch::varlink::{self, Call, CallError};
 use stallwatch::ring::{Frame, Ring};
 
 const USAGE: &str = "\
@@ -26,8 +27,11 @@ OPTIONS:
   --history SECS   how much history to retain (default 300)
   -h, --help       this text
 
-Serves queries on $XDG_RUNTIME_DIR/stallwatch.sock:
-  PING | NOW | SINCE <secs>
+Serves two sockets in $XDG_RUNTIME_DIR:
+  stallwatch.sock      line protocol: PING | NOW | SINCE <secs> [json|text]
+  stallwatch.varlink   Varlink, e.g.
+    varlinkctl call $XDG_RUNTIME_DIR/stallwatch.varlink \\
+        dev.stallwatch.Monitor.GetHistory '{\"seconds\":30}'
 ";
 
 fn now_unix() -> u64 {
@@ -62,12 +66,12 @@ fn main() {
     let capacity = ((history_secs * 1000) / tick_ms).max(1) as usize;
     let ring = Arc::new(Mutex::new(Ring::new(capacity)));
 
+    let listener = bind_or_die(&socket_path());
+    let vlistener = bind_or_die(&varlink_socket_path());
+
     let path = socket_path();
-    // A socket left behind by a killed daemon would make bind() fail with
-    // EADDRINUSE forever. Only remove it if nobody is actually listening.
-    if path.exists() {
+    if false {
         if UnixStream::connect(&path).is_ok() {
-            eprintln!("stallwatchd: already running at {}", path.display());
             std::process::exit(1);
         }
         // Nobody is listening, so this is a socket left by a killed daemon.
@@ -86,24 +90,10 @@ fn main() {
         }
     }
 
-    let listener = match UnixListener::bind(&path) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("stallwatchd: cannot bind {}: {e}", path.display());
-            std::process::exit(1);
-        }
-    };
-    // Owner-only. The socket exposes which programs are stalling and their
-    // cgroup paths — session-private information, not world-readable.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
-
     eprintln!(
-        "stallwatchd: listening on {} (tick {}ms, {} frames ≈ {}s history)",
-        path.display(),
+        "stallwatchd: listening on {} and {} (tick {}ms, {} frames ~ {}s history)",
+        socket_path().display(),
+        varlink_socket_path().display(),
         tick_ms,
         capacity,
         history_secs
@@ -126,6 +116,16 @@ fn main() {
                 if let Ok(mut r) = ring.lock() {
                     r.push(frame);
                 }
+            }
+        });
+    }
+
+    {
+        let ring = Arc::clone(&ring);
+        std::thread::spawn(move || {
+            for stream in vlistener.incoming().flatten() {
+                let ring = Arc::clone(&ring);
+                std::thread::spawn(move || handle_varlink(stream, ring));
             }
         });
     }
@@ -191,4 +191,105 @@ fn render(r: &stallwatch::Report, fmt: Format) -> String {
         Format::Json => r.to_json(),
         Format::Text => r.to_text(),
     }
+}
+
+/// Bind a Unix socket, clearing a socket left by an unclean exit.
+fn bind_or_die(path: &std::path::Path) -> UnixListener {
+    if path.exists() {
+        if UnixStream::connect(path).is_ok() {
+            eprintln!("stallwatchd: already running at {}", path.display());
+            std::process::exit(1);
+        }
+        // Never swallow this: if the runtime dir is read-only (an over-tight
+        // ProtectSystem= in a unit file) bind() then fails with a bare
+        // "Address already in use" and sends people hunting for a process that
+        // does not exist.
+        if let Err(e) = std::fs::remove_file(path) {
+            eprintln!(
+                "stallwatchd: stale socket at {} could not be removed: {e}\n\
+                 (nothing is listening on it. under systemd the unit likely needs \
+                 ReadWritePaths=%t so $XDG_RUNTIME_DIR stays writable)",
+                path.display()
+            );
+            std::process::exit(1);
+        }
+    }
+    match UnixListener::bind(path) {
+        Ok(l) => {
+            use std::os::unix::fs::PermissionsExt;
+            // Owner-only: the socket reveals which programs are stalling and
+            // their cgroup paths, which is session-private.
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            l
+        }
+        Err(e) => {
+            eprintln!("stallwatchd: cannot bind {}: {e}", path.display());
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Varlink: NUL-separated JSON, one call per frame.
+fn handle_varlink(stream: UnixStream, ring: Arc<Mutex<Ring>>) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let mut reader = BufReader::new(match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return,
+    });
+    let mut out = stream;
+
+    loop {
+        let mut frame = Vec::new();
+        // read_until on NUL is the whole framing layer.
+        match reader.read_until(0, &mut frame) {
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(_) => return,
+        }
+        if frame.last() == Some(&0) {
+            frame.pop();
+        }
+        let Ok(text) = String::from_utf8(frame) else {
+            let _ = write_frame(&mut out, &varlink::error_for(&CallError::Malformed("not UTF-8")));
+            return;
+        };
+        if text.trim().is_empty() {
+            return;
+        }
+
+        let reply = match varlink::parse_call(&text) {
+            Ok(Call::GetInfo) => varlink::reply_info(),
+            Ok(Call::GetInterfaceDescription(iface)) => {
+                if iface == varlink::INTERFACE {
+                    varlink::reply_interface_description()
+                } else {
+                    varlink::error_for(&CallError::UnknownInterface(iface))
+                }
+            }
+            Ok(Call::GetStalls { window_ms }) => {
+                let r = stallwatch::observe(Duration::from_millis(window_ms));
+                varlink::reply_report(&r)
+            }
+            Ok(Call::GetHistory { seconds }) => {
+                let since = now_unix().saturating_sub(seconds);
+                let mut r = match ring.lock() {
+                    Ok(g) => g.aggregate(since),
+                    Err(_) => stallwatch::Report::default(),
+                };
+                r.warnings = stallwatch::pathology::scan();
+                varlink::reply_report(&r)
+            }
+            Err(e) => varlink::error_for(&e),
+        };
+
+        if write_frame(&mut out, &reply).is_err() {
+            return;
+        }
+    }
+}
+
+fn write_frame(out: &mut UnixStream, s: &str) -> std::io::Result<()> {
+    out.write_all(s.as_bytes())?;
+    out.write_all(&[0])?;
+    out.flush()
 }

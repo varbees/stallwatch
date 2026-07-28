@@ -76,6 +76,18 @@ impl Format {
     }
 }
 
+/// Varlink socket path, alongside the legacy line-protocol socket.
+///
+/// Two sockets rather than one multiplexed: Varlink frames are NUL-separated
+/// JSON and the line protocol is newline-separated text, so sniffing which one
+/// a client speaks would be guesswork on the first byte. Two listeners is a few
+/// lines and zero ambiguity.
+pub fn varlink_socket_path() -> PathBuf {
+    let mut p = socket_path();
+    p.set_extension("varlink");
+    p
+}
+
 /// A parsed client request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Request {

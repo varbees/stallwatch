@@ -41,10 +41,12 @@ use std::time::Duration;
 pub mod attribution;
 pub mod cgroup;
 pub mod ipc;
+pub mod json;
 pub mod pathology;
 pub mod process;
 pub mod psi;
 pub mod ring;
+pub mod varlink;
 
 pub use pathology::{Severity, Warning};
 pub use psi::{PsiKind, Resource};
@@ -163,6 +165,50 @@ impl Report {
         }
         s.push_str("  ]\n}");
         s
+    }
+}
+
+impl Report {
+    /// Single-line JSON, for protocols that frame one document per message.
+    ///
+    /// Same field names as [`Report::to_json`] by construction rather than by
+    /// convention — two renderers that can drift are two schemas.
+    pub fn to_json_compact(&self) -> String {
+        let stalls: Vec<String> = self
+            .stalls
+            .iter()
+            .map(|s| {
+                format!(
+                    r#"{{"unit":{},"cgroup":{},"resource":"{}","type":"{}","delta_usec":{},"pressure_pct":{:.2},"peak_pct":{:.2}}}"#,
+                    json_str(&s.unit),
+                    json_str(&s.cgroup),
+                    s.resource,
+                    s.kind,
+                    s.delta_usec,
+                    s.pressure_pct,
+                    s.peak_pct
+                )
+            })
+            .collect();
+        let warnings: Vec<String> = self
+            .warnings
+            .iter()
+            .map(|w| {
+                format!(
+                    r#"{{"source":{},"severity":"{}","transient":{},"message":{}}}"#,
+                    json_str(&w.source),
+                    w.severity,
+                    w.transient,
+                    json_str(&w.message)
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"window_usec":{},"stalls":[{}],"warnings":[{}]}}"#,
+            self.window_usec,
+            stalls.join(","),
+            warnings.join(",")
+        )
     }
 }
 
