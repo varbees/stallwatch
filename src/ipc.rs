@@ -31,11 +31,10 @@ use std::path::PathBuf;
 /// so two users on one machine cannot collide, and is only reached on systems
 /// without an XDG runtime dir.
 pub fn socket_path() -> PathBuf {
-    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-        if !dir.is_empty() {
+    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR")
+        && !dir.is_empty() {
             return PathBuf::from(dir).join("stallwatch.sock");
         }
-    }
     PathBuf::from(format!("/tmp/stallwatch-{}.sock", unsafe { libc_getuid() }))
 }
 

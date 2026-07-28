@@ -65,13 +65,12 @@ pub fn unescape_systemd(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 3 < bytes.len() && bytes[i + 1] == b'x' {
-            if let Ok(b) = u8::from_str_radix(&name[i + 2..i + 4], 16) {
+        if bytes[i] == b'\\' && i + 3 < bytes.len() && bytes[i + 1] == b'x'
+            && let Ok(b) = u8::from_str_radix(&name[i + 2..i + 4], 16) {
                 out.push(b as char);
                 i += 4;
                 continue;
             }
-        }
         out.push(bytes[i] as char);
         i += 1;
     }

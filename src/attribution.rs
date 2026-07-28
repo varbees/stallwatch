@@ -25,11 +25,73 @@ use crate::psi::Snapshot;
 /// finding ("everything under app.slice is thrashing", not one app).
 const CHILD_DOMINANCE: u64 = 80;
 
-/// Is this cgroup the one to blame, or is a child responsible?
+/// Precomputed "worst descendant" per cgroup.
 ///
-/// A cgroup is responsible when no single descendant accounts for
-/// [`CHILD_DOMINANCE`] percent or more of its stall.
-pub fn is_responsible(cg: &Path, delta: u64, deltas: &HashMap<PathBuf, u64>) -> bool {
+/// The obvious implementation of the dominance rule — for each cgroup, scan
+/// every other cgroup looking for descendants — is O(n^2), and cgroup paths
+/// are compared component-wise so each probe is itself proportional to depth.
+/// Measured at 152 cgroups it was already 60% of a tick; projected to a
+/// 2,000-cgroup Kubernetes node it is ~800ms per tick, and ~5s at 5,000. The
+/// duty-cycle pacing would have absorbed that by stretching the interval to
+/// tens of seconds, which is safe and useless.
+///
+/// The tree makes it unnecessary. Sorting paths puts every descendant after
+/// its ancestor, so one reverse pass propagates each subtree's maximum up to
+/// its nearest present ancestor. Deepest-first means a node's own maximum is
+/// already complete when it propagates. O(n log n) for the sort plus
+/// O(n * depth) for the walk.
+pub struct Responsibility {
+    /// Largest delta anywhere strictly below each cgroup.
+    max_descendant: HashMap<PathBuf, u64>,
+}
+
+impl Responsibility {
+    pub fn new(deltas: &HashMap<PathBuf, u64>) -> Self {
+        let mut paths: Vec<&PathBuf> = deltas.keys().collect();
+        paths.sort_unstable();
+
+        let mut max_descendant: HashMap<PathBuf, u64> =
+            deltas.keys().map(|p| (p.clone(), 0u64)).collect();
+
+        // Deepest-first: when a node propagates, its own subtree maximum is
+        // already final, so a single hop to the nearest present ancestor is
+        // sufficient — that ancestor propagates further when its turn comes.
+        for path in paths.into_iter().rev() {
+            let own = deltas.get(path).copied().unwrap_or(0);
+            let subtree = own.max(max_descendant.get(path).copied().unwrap_or(0));
+
+            let mut ancestor = path.parent();
+            while let Some(a) = ancestor {
+                if let Some(slot) = max_descendant.get_mut(a) {
+                    if subtree > *slot {
+                        *slot = subtree;
+                    }
+                    break;
+                }
+                ancestor = a.parent();
+            }
+        }
+
+        Self { max_descendant }
+    }
+
+    /// Is this cgroup the one to blame, or is a child responsible?
+    ///
+    /// Responsible when no single descendant accounts for
+    /// [`CHILD_DOMINANCE`] percent or more of its stall.
+    pub fn is_responsible(&self, cg: &Path, delta: u64) -> bool {
+        if delta == 0 {
+            return false;
+        }
+        let worst_child = self.max_descendant.get(cg).copied().unwrap_or(0);
+        worst_child * 100 < delta * CHILD_DOMINANCE
+    }
+}
+
+/// Reference implementation of the dominance rule, kept for differential
+/// testing against [`Responsibility`]. Quadratic; not used in the hot path.
+#[cfg(test)]
+fn is_responsible_naive(cg: &Path, delta: u64, deltas: &HashMap<PathBuf, u64>) -> bool {
     if delta == 0 {
         return false;
     }
@@ -76,9 +138,10 @@ pub fn collect(window: Duration) -> (Vec<Stall>, u64) {
             deltas.insert(cg.clone(), a.saturating_sub(b));
         }
 
+        let responsibility = Responsibility::new(&deltas);
         for (cg, &d) in &deltas {
             let pct = d as f64 / elapsed_us as f64 * 100.0;
-            if pct < MIN_REPORTABLE_PCT || !is_responsible(cg, d, &deltas) {
+            if pct < MIN_REPORTABLE_PCT || !responsibility.is_responsible(cg, d) {
                 continue;
             }
             stalls.push(Stall {
@@ -117,12 +180,16 @@ mod tests {
             ("/sys/fs/cgroup/user.slice", 1000),
             ("/sys/fs/cgroup/user.slice/app.slice", 900),
         ]);
-        assert!(!is_responsible(Path::new("/sys/fs/cgroup/user.slice"), 1000, &d));
-        assert!(is_responsible(
+        assert!(!is_responsible_naive(Path::new("/sys/fs/cgroup/user.slice"), 1000, &d));
+        assert!(is_responsible_naive(
             Path::new("/sys/fs/cgroup/user.slice/app.slice"),
             900,
             &d
         ));
+        // The fast path must agree with the reference.
+        let r = Responsibility::new(&d);
+        assert!(!r.is_responsible(Path::new("/sys/fs/cgroup/user.slice"), 1000));
+        assert!(r.is_responsible(Path::new("/sys/fs/cgroup/user.slice/app.slice"), 900));
     }
 
     #[test]
@@ -134,24 +201,24 @@ mod tests {
             ("/sys/fs/cgroup/user.slice/a.scope", 500),
             ("/sys/fs/cgroup/user.slice/b.scope", 500),
         ]);
-        assert!(is_responsible(Path::new("/sys/fs/cgroup/user.slice"), 1000, &d));
+        assert!(is_responsible_naive(Path::new("/sys/fs/cgroup/user.slice"), 1000, &d));
     }
 
     #[test]
     fn zero_delta_is_never_responsible() {
-        assert!(!is_responsible(Path::new("/x"), 0, &m(&[])));
+        assert!(!is_responsible_naive(Path::new("/x"), 0, &m(&[])));
     }
 
     #[test]
     fn exactly_at_dominance_threshold_yields() {
         let d = m(&[("/p", 1000), ("/p/c", 800)]);
-        assert!(!is_responsible(Path::new("/p"), 1000, &d));
+        assert!(!is_responsible_naive(Path::new("/p"), 1000, &d));
     }
 
     #[test]
     fn just_under_threshold_keeps_blame() {
         let d = m(&[("/p", 1000), ("/p/c", 799)]);
-        assert!(is_responsible(Path::new("/p"), 1000, &d));
+        assert!(is_responsible_naive(Path::new("/p"), 1000, &d));
     }
 
     #[test]
@@ -160,7 +227,7 @@ mod tests {
         // PathBuf::starts_with compares components, which is why this holds —
         // guard it with a test so nobody "optimises" it into a string compare.
         let d = m(&[("/p", 1000), ("/p2", 900)]);
-        assert!(is_responsible(Path::new("/p"), 1000, &d));
+        assert!(is_responsible_naive(Path::new("/p"), 1000, &d));
     }
 }
 
@@ -265,9 +332,10 @@ fn diff(
             deltas.insert(cg.clone(), a.saturating_sub(b));
         }
 
+        let responsibility = Responsibility::new(&deltas);
         for (cg, &d) in &deltas {
             let pct = d as f64 / elapsed_us as f64 * 100.0;
-            if pct < MIN_REPORTABLE_PCT || !is_responsible(cg, d, &deltas) {
+            if pct < MIN_REPORTABLE_PCT || !responsibility.is_responsible(cg, d) {
                 continue;
             }
             stalls.push(Stall {
@@ -289,6 +357,93 @@ fn diff(
     });
     stalls.truncate(MAX_STALLS);
     stalls
+}
+
+#[cfg(test)]
+mod responsibility_tests {
+    use super::*;
+
+    fn m(pairs: &[(&str, u64)]) -> HashMap<PathBuf, u64> {
+        pairs.iter().map(|(p, d)| (PathBuf::from(p), *d)).collect()
+    }
+
+    /// The fast path must agree with the quadratic reference on every input.
+    fn assert_agrees(d: &HashMap<PathBuf, u64>) {
+        let r = Responsibility::new(d);
+        for (p, &delta) in d {
+            assert_eq!(
+                r.is_responsible(p, delta),
+                is_responsible_naive(p, delta, d),
+                "disagreement at {p:?} delta={delta}"
+            );
+        }
+    }
+
+    #[test]
+    fn agrees_with_reference_on_a_deep_tree() {
+        assert_agrees(&m(&[
+            ("/sys/fs/cgroup", 1000),
+            ("/sys/fs/cgroup/user.slice", 900),
+            ("/sys/fs/cgroup/user.slice/user-1000.slice", 880),
+            ("/sys/fs/cgroup/user.slice/user-1000.slice/app.slice", 870),
+            ("/sys/fs/cgroup/user.slice/user-1000.slice/app.slice/a.scope", 800),
+            ("/sys/fs/cgroup/user.slice/user-1000.slice/app.slice/b.scope", 40),
+            ("/sys/fs/cgroup/system.slice", 100),
+            ("/sys/fs/cgroup/system.slice/x.service", 10),
+        ]));
+    }
+
+    #[test]
+    fn agrees_when_children_are_diffuse() {
+        assert_agrees(&m(&[
+            ("/p", 1000),
+            ("/p/a", 500),
+            ("/p/b", 500),
+        ]));
+    }
+
+    #[test]
+    fn agrees_on_sibling_prefix_traps() {
+        // "/p2" shares a string prefix with "/p" but is not a descendant.
+        assert_agrees(&m(&[("/p", 1000), ("/p2", 900), ("/p/c", 10)]));
+    }
+
+    #[test]
+    fn agrees_with_gaps_in_the_hierarchy() {
+        // Intermediate cgroups can be absent from the delta map entirely
+        // (no pressure files, or unreadable). Propagation must still find the
+        // nearest present ancestor rather than stopping at the first gap.
+        assert_agrees(&m(&[("/a", 1000), ("/a/b/c/d", 950)]));
+    }
+
+    #[test]
+    fn agrees_on_zero_and_single_entries() {
+        assert_agrees(&m(&[]));
+        assert_agrees(&m(&[("/only", 500)]));
+        assert_agrees(&m(&[("/z", 0), ("/z/c", 0)]));
+    }
+
+    #[test]
+    fn scales_without_quadratic_blowup() {
+        // 5,000 cgroups is a dense Kubernetes node. The quadratic version
+        // projected to ~5s per tick here.
+        let mut d = HashMap::new();
+        for i in 0..5000u64 {
+            d.insert(
+                PathBuf::from(format!("/sys/fs/cgroup/system.slice/svc{}.service", i % 250))
+                    .join(format!("task{i}.scope")),
+                i % 977,
+            );
+        }
+        let t = std::time::Instant::now();
+        let r = Responsibility::new(&d);
+        let build = t.elapsed();
+        let _ = r.is_responsible(Path::new("/sys/fs/cgroup/system.slice"), 100);
+        assert!(
+            build < Duration::from_millis(250),
+            "5k cgroups took {build:?}; quadratic behaviour has returned"
+        );
+    }
 }
 
 #[cfg(test)]

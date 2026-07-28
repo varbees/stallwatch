@@ -199,11 +199,9 @@ fn drill_top(report: &stallwatch::Report, window_ms: u64) -> String {
     }
 
     if !found_any {
-        return format!(
-            "\n  no process caught blocking or doing disk IO in a follow-up window\n\
+        return "\n  no process caught blocking or doing disk IO in a follow-up window\n\
              \x20 (the stall may have ended, or the work is kernel-side — see any\n\
-             \x20  transient warning above)\n"
-        );
+             \x20  transient warning above)\n".to_string();
     }
     if !stallwatch::process::delayacct_enabled() {
         o.push_str(

@@ -142,9 +142,36 @@ mod tests {
     }
 
     #[test]
-    fn discard_below_floor_is_not_reported() {
-        // Guards the constant: a few hundred queued extents is normal steady
-        // state and must not produce a finding.
-        assert!(DISCARD_EXTENT_FLOOR >= 10_000);
+    fn discard_warning_respects_the_floor() {
+        // Was `assert!(DISCARD_EXTENT_FLOOR >= 10_000)` — a tautology against a
+        // constant defined as 10_000, which can never fail and only looked like
+        // coverage. Exercise the actual decision instead, against a synthetic
+        // sysfs tree.
+        let tmp = std::env::temp_dir().join(format!("sw-btrfs-test-{}", std::process::id()));
+        let disc = tmp.join("discard");
+        let _ = fs::create_dir_all(&disc);
+        let write = |name: &str, v: &str| {
+            let _ = fs::write(disc.join(name), v);
+        };
+
+        write("discardable_extents", "500");
+        write("discardable_bytes", "1048576");
+        write("iops_limit", "1000");
+        assert!(
+            check_discard(&tmp, "test").is_none(),
+            "a small steady-state queue must not be reported"
+        );
+
+        write("discardable_extents", "250000");
+        let w = check_discard(&tmp, "test").expect("a large backlog must be reported");
+        assert!(w.transient, "a discard backlog clears on its own");
+        assert!(w.message.contains("250000"), "{}", w.message);
+        assert!(
+            w.message.contains("kernel"),
+            "must explain why no process shows IO delay: {}",
+            w.message
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
