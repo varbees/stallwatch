@@ -170,6 +170,37 @@ over a Unix socket — no handshake, no marshalling, no dependency. systemd 258
 ships dozens of `io.systemd.*` Varlink services, so this is the direction the
 platform is already moving.
 
+### Prometheus / SRE
+
+```sh
+stallwatchd --metrics-listen 127.0.0.1:9836          # scrape http://…/metrics
+stallwatchd --metrics-textfile /var/lib/node_exporter/textfile/stallwatch.prom
+```
+
+```
+stallwatch_pressure_waiting_seconds_total{unit="systemd-journald",cgroup="…",resource="io"} 41.7
+stallwatch_pressure_stalled_seconds_total{unit="systemd-journald",cgroup="…",resource="io"} 12.9
+stallwatch_btrfs_unallocated_bytes{fsid="…"} 13909415424
+stallwatch_drive_temperature_celsius{device="nvme",sensor="Composite"} 53.9
+```
+
+**Counters, not deltas.** The CLI reports deltas because humans want "frozen
+858ms in the last second". Prometheus wants the opposite — a monotonic counter
+it differentiates with `rate()`. PSI's `total=` already *is* that counter, so
+the exporter reads raw totals rather than reusing the attribution path.
+Naming follows the `waiting`/`stalled` vocabulary cAdvisor and Kubernetes
+settled on, so anything already ingesting `container_pressure_*` finds nothing
+surprising.
+
+**Cardinality is taken seriously**, because it is what takes down a Prometheus.
+systemd mints a fresh transient scope per shell command — an unbounded label
+space. Cgroups with zero accumulated pressure are skipped, series are capped
+(`--max-series`, default 500), and `stallwatch_series_dropped` reports what was
+withheld. A silent cap is a lie.
+
+Only drive sensors that publish their own `_crit` threshold are exported.
+Auxiliary sensors read high on healthy hardware and would alert on nothing.
+
 ## As a library
 
 The engine is a library; the CLI is one thin client of it. The JSON above *is* the schema, and it is deliberately aligned with the vocabulary Kubernetes and cAdvisor already settled on (`container_pressure_*`, where `waiting` is PSI `some` and `stalled` is PSI `full`).

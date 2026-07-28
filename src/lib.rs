@@ -42,6 +42,7 @@ pub mod attribution;
 pub mod cgroup;
 pub mod ipc;
 pub mod json;
+pub mod metrics;
 pub mod pathology;
 pub mod process;
 pub mod psi;

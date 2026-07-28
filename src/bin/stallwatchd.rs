@@ -8,6 +8,7 @@
 //! no business running as root.
 
 use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -23,9 +24,12 @@ USAGE:
   stallwatchd [--tick MS] [--history SECS]
 
 OPTIONS:
-  --tick MS        sampling window per frame (default 1000)
-  --history SECS   how much history to retain (default 300)
-  -h, --help       this text
+  --tick MS            sampling window per frame (default 1000)
+  --history SECS       how much history to retain (default 300)
+  --metrics-listen A   serve Prometheus /metrics on A (e.g. 127.0.0.1:9836)
+  --metrics-textfile P write P for node_exporter's textfile collector
+  --max-series N       cardinality cap per scrape (default 500)
+  -h, --help           this text
 
 Serves two sockets in $XDG_RUNTIME_DIR:
   stallwatch.sock      line protocol: PING | NOW | SINCE <secs> [json|text]
@@ -54,6 +58,15 @@ fn main() {
             .and_then(|v| v.parse().ok())
             .unwrap_or(default)
     };
+    let strflag = |name: &str| -> Option<String> {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
+    let max_series = flag("--max-series", stallwatch::metrics::DEFAULT_MAX_SERIES as u64) as usize;
+    let metrics_listen = strflag("--metrics-listen");
+    let metrics_textfile = strflag("--metrics-textfile");
     let tick_ms = flag("--tick", 1000).max(100);
     let history_secs = flag("--history", 300).max(10);
 
@@ -127,6 +140,33 @@ fn main() {
                 let ring = Arc::clone(&ring);
                 std::thread::spawn(move || handle_varlink(stream, ring));
             }
+        });
+    }
+
+    if let Some(addr) = metrics_listen {
+        match TcpListener::bind(&addr) {
+            Ok(l) => {
+                eprintln!("stallwatchd: serving metrics on http://{addr}/metrics");
+                std::thread::spawn(move || {
+                    for s in l.incoming().flatten() {
+                        std::thread::spawn(move || serve_metrics(s, max_series));
+                    }
+                });
+            }
+            Err(e) => {
+                eprintln!("stallwatchd: cannot bind {addr}: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(path) = metrics_textfile {
+        eprintln!("stallwatchd: writing textfile metrics to {path}");
+        std::thread::spawn(move || loop {
+            if let Err(e) = write_textfile(&path, max_series) {
+                eprintln!("stallwatchd: textfile write failed: {e}");
+            }
+            std::thread::sleep(Duration::from_secs(15));
         });
     }
 
@@ -292,4 +332,72 @@ fn write_frame(out: &mut UnixStream, s: &str) -> std::io::Result<()> {
     out.write_all(s.as_bytes())?;
     out.write_all(&[0])?;
     out.flush()
+}
+
+/// node_exporter's textfile collector.
+///
+/// Written to a temporary file and renamed, never written in place: the
+/// collector may read at any moment and a partial document would be parsed as
+/// truncated metrics rather than skipped. rename(2) within a directory is
+/// atomic, so a reader sees either the old file or the new one.
+fn write_textfile(path: &str, max_series: usize) -> std::io::Result<()> {
+    let body = stallwatch::metrics::render(max_series);
+    let tmp = format!("{path}.tmp");
+    std::fs::write(&tmp, body)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// A deliberately minimal HTTP/1.1 responder for Prometheus scrapes.
+///
+/// Prometheus issues `GET /metrics` and reads one response — it needs no
+/// keep-alive, no chunking, no compression negotiation. Hand-rolling ~40 lines
+/// keeps the zero-dependency property; pulling in an HTTP crate for this would
+/// trade the property that makes the engine adoptable for nothing.
+fn serve_metrics(mut stream: TcpStream, max_series: usize) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
+
+    let mut reader = BufReader::new(match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return,
+    });
+    let mut request_line = String::new();
+    if reader.read_line(&mut request_line).is_err() {
+        return;
+    }
+    // Drain headers so the client is not left writing into a closed pipe.
+    let mut line = String::new();
+    while let Ok(n) = reader.read_line(&mut line) {
+        if n == 0 || line == "\r\n" || line == "\n" {
+            break;
+        }
+        line.clear();
+    }
+
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let target = parts.next().unwrap_or("");
+    let path = target.split('?').next().unwrap_or("");
+
+    let (status, ctype, body) = match (method, path) {
+        ("GET", "/metrics") => (
+            "200 OK",
+            "text/plain; version=0.0.4; charset=utf-8",
+            stallwatch::metrics::render(max_series),
+        ),
+        ("GET", "/") => (
+            "200 OK",
+            "text/html; charset=utf-8",
+            "<html><body><a href=\"/metrics\">metrics</a></body></html>\n".to_string(),
+        ),
+        ("GET", _) => ("404 Not Found", "text/plain; charset=utf-8", "not found\n".to_string()),
+        _ => ("405 Method Not Allowed", "text/plain; charset=utf-8", "method not allowed\n".to_string()),
+    };
+
+    let _ = write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.flush();
 }
