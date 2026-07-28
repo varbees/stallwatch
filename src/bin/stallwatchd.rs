@@ -70,7 +70,20 @@ fn main() {
             eprintln!("stallwatchd: already running at {}", path.display());
             std::process::exit(1);
         }
-        let _ = std::fs::remove_file(&path);
+        // Nobody is listening, so this is a socket left by a killed daemon.
+        // Do NOT swallow the removal error: if the runtime dir is read-only
+        // (an over-tight ProtectSystem= in a unit file, for instance) bind()
+        // then fails with a bare "Address already in use", which sends people
+        // hunting for a running process that does not exist.
+        if let Err(e) = std::fs::remove_file(&path) {
+            eprintln!(
+                "stallwatchd: stale socket at {} could not be removed: {e}\n\
+                 (nothing is listening on it. if running under systemd, the unit \
+                 likely needs ReadWritePaths=%t so $XDG_RUNTIME_DIR stays writable)",
+                path.display()
+            );
+            std::process::exit(1);
+        }
     }
 
     let listener = match UnixListener::bind(&path) {

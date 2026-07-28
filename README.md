@@ -2,6 +2,12 @@
 
 **Your Linux desktop freezes. `htop` says the CPU is idle and you have free RAM. So what stopped?**
 
+![stallwatch diagnosing a real disk stall](demo/demo.gif)
+
+*Not staged — a real `dd` saturating a real NVMe, diagnosed live. `free` and
+`uptime` report a healthy machine; `/proc/pressure` proves it is frozen but
+cannot say on what; stallwatch names the unit, then the process inside it.*
+
 ```console
 $ stallwatch
 Over the last 1.0s, these units stalled the system:
@@ -193,4 +199,5 @@ That heuristic would also have fired on every healthy drive of the same family. 
 
 ## License
 
-MIT OR Apache-2.0
+MIT ([LICENSE-MIT](LICENSE-MIT)) or Apache-2.0 ([LICENSE-APACHE](LICENSE-APACHE)),
+at your option.

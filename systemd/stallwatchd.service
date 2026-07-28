@@ -27,9 +27,11 @@ RestrictSUIDSGID=true
 MemoryDenyWriteExecute=true
 LockPersonality=true
 RestrictRealtime=true
-# The socket lives in $XDG_RUNTIME_DIR, which stays writable under
-# ProtectSystem=strict.
-RuntimeDirectoryPreserve=yes
+# ProtectSystem=strict makes everything read-only except /dev, /proc and /sys —
+# including $XDG_RUNTIME_DIR, where the socket lives. Without this the daemon
+# cannot bind, and cannot clear a stale socket after an unclean exit.
+# %t expands to $XDG_RUNTIME_DIR for user units.
+ReadWritePaths=%t
 
 [Install]
 WantedBy=default.target
