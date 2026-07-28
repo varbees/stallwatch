@@ -19,7 +19,8 @@ Over the last 1.0s, these units stalled the system:
      — do not go hunting for a runaway program. Roughly 3 min at the 1000 IOPS limit.
 ```
 
-No privileges. No daemon. No dependencies. 384 KB.
+No privileges. No dependencies. 393 KB. The daemon is optional and only needed
+for history.
 
 ---
 
