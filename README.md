@@ -72,7 +72,35 @@ stallwatch                    # one-second snapshot
 stallwatch --watch            # refresh until Ctrl-C
 stallwatch --window 3000      # three-second window
 stallwatch --json             # machine-readable
+stallwatch --processes        # name the process, not just the unit
 ```
+
+### Naming the process, not just the unit
+
+```console
+$ stallwatch --processes
+    83.5%  io      com.mitchellh.ghostty  — frozen 1015ms waiting on io
+
+  inside ghostty-surface-transient:
+    active   83% blocked  dd [214461]  ·  5 MiB of disk IO
+```
+
+Two things this had to get right, both learned by being wrong first:
+
+**PSI blames the victim, not the cause.** It measures who is *blocked*. A `dd`
+saturating the disk sat in a sibling cgroup with a fraction of the pressure of
+the terminal it was starving — so drilling only the worst cgroup finds the
+casualty and misses the culprit. `--processes` probes the top few.
+
+**D-state alone is not enough.** A task throttled by dirty-page writeback is
+counted as IO-stalled by PSI while showing state `S`. The terminal above
+registered 83% pressure with no process ever caught in `D`. Block-layer byte
+counters catch what state sampling cannot, so both are reported: high bytes with
+low blocking is causing the stall, high blocking with low bytes is suffering it.
+
+`delayacct_blkio_ticks` would give exact blocking time, but it is off by default
+since 5.14 (`kernel.task_delayacct=0`) so it is used when present and never
+depended on.
 
 ### "What just happened?"
 
@@ -145,7 +173,10 @@ That heuristic would also have fired on every healthy drive of the same family. 
 ## Limitations
 
 - **cgroup v2 and systemd only.** No v1 fallback.
-- **Attribution stops at the cgroup.** systemd puts a terminal and all its shell children in one cgroup, so a `du` command inside your terminal is reported as the terminal. Per-process drill-down via `/proc/<pid>/stat` field 42 (`delayacct_blkio_ticks`) is planned.
+- **Per-process drill-down is a second window.** `--processes` cannot know which
+  cgroup is guilty until the first pass finishes, so it samples again straight
+  after. For a sustained stall that is fine; a one-off spike may be gone, and it
+  says so rather than implying otherwise.
 - **No D-Bus yet.** The daemon speaks a Unix socket. D-Bus is the right
   integration surface — it is what lets KRunner, GNOME and waybar consume this
   without inheriting a Rust build dependency — but every Rust D-Bus crate is a
@@ -157,7 +188,7 @@ That heuristic would also have fired on every healthy drive of the same family. 
 
 1. ~~Daemon with a ring buffer~~ — done
 2. D-Bus interface, so adapters (KRunner, GNOME, waybar, Vicinae) are thin and no one inherits a Rust build dependency
-3. Per-process drill-down inside the guilty cgroup, via `/proc/<pid>/stat` field 42 (`delayacct_blkio_ticks`)
+3. ~~Per-process drill-down~~ — done
 4. More pathologies: zram/zswap saturation, ZFS ARC pressure, dm-thin exhaustion, NVMe SMART wear
 
 ## License
