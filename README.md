@@ -135,9 +135,18 @@ cp systemd/stallwatchd.service ~/.config/systemd/user/
 systemctl --user enable --now stallwatchd      # keep it running
 ```
 
-~2.6 MB resident, one frame per second, 300 seconds of history by default.
-It runs at idle IO priority and `Nice=10`: a tool that exists to observe
-contention must never cause any.
+**3.0 MB resident, 0.90% of one core** (measured over 30s: 9.0ms CPU per sweep
+at the 1Hz floor). It runs at idle IO priority and `Nice=10` — a tool that
+exists to observe contention must never cause any.
+
+That principle needed enforcing, not just stating. The daemon retains the
+previous snapshot so each tick costs **one** sweep of the cgroup tree instead
+of two, and it paces itself from measured sweep cost against a duty-cycle
+budget (`--duty`, default 2%) rather than assuming one tick fits every machine.
+A sweep is ~10ms across 152 cgroups; on a 2,000-cgroup Kubernetes node it is
+over a hundred, where a fixed 1Hz tick would have burned ~26% of a core. When
+pacing diverges from `--tick` the daemon says so, because silently sampling at
+a third of the requested rate would make every number quietly wrong.
 
 The socket is `$XDG_RUNTIME_DIR/stallwatch.sock`, mode `0600`, and the protocol
 is one line in and one document out — `socat` is a valid client:

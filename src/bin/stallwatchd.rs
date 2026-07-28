@@ -15,6 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use stallwatch::ipc::{socket_path, varlink_socket_path, Format, Request};
 use stallwatch::varlink::{self, Call, CallError};
+use stallwatch::attribution::Sampler;
 use stallwatch::ring::{Frame, Ring};
 
 const USAGE: &str = "\
@@ -24,7 +25,9 @@ USAGE:
   stallwatchd [--tick MS] [--history SECS]
 
 OPTIONS:
-  --tick MS            sampling window per frame (default 1000)
+  --tick MS            minimum sampling interval (default 1000). The daemon
+                       paces itself slower than this if sweeps are expensive.
+  --duty PCT           share of one core sampling may use (default 2)
   --history SECS       how much history to retain (default 300)
   --metrics-listen A   serve Prometheus /metrics on A (e.g. 127.0.0.1:9836)
   --metrics-textfile P write P for node_exporter's textfile collector
@@ -68,6 +71,7 @@ fn main() {
     let metrics_listen = strflag("--metrics-listen");
     let metrics_textfile = strflag("--metrics-textfile");
     let tick_ms = flag("--tick", 1000).max(100);
+    let duty = (flag("--duty", 2) as f64 / 100.0).clamp(0.001, 0.5);
     let history_secs = flag("--history", 300).max(10);
 
     if !stallwatch::psi_available() {
@@ -113,21 +117,47 @@ fn main() {
     );
 
     // Sampler thread.
+    //
+    // Retains the previous snapshot, so each tick costs ONE sweep of the cgroup
+    // tree rather than two. On a 152-cgroup desktop a sweep is ~10ms; on a
+    // 2,000-cgroup node it is over a hundred. A fixed tick that is harmless on
+    // the former is ~26% of a core on the latter, which would make a tool built
+    // to observe contention a cause of it. The interval is therefore derived
+    // from measured sweep cost against a duty-cycle budget.
     {
         let ring = Arc::clone(&ring);
+        let floor = Duration::from_millis(tick_ms);
+        let ceil = Duration::from_secs(30);
         std::thread::spawn(move || {
+            let mut sampler = Sampler::new();
+            let mut interval = floor;
+            let mut announced = Duration::ZERO;
             loop {
-                let (stalls, window_usec) =
-                    stallwatch::attribution::collect(Duration::from_millis(tick_ms));
-                let frame = Frame {
-                    at_unix: now_unix(),
-                    window_usec,
-                    stalls,
-                };
-                // Lock only to push; never hold it across sampling, which
-                // blocks for a full tick and would stall every query.
+                std::thread::sleep(interval);
+                let (stalls, window_usec) = sampler.tick();
+                // Lock only to push; never across the sweep, which would block
+                // every query for its duration.
                 if let Ok(mut r) = ring.lock() {
-                    r.push(frame);
+                    r.push(Frame {
+                        at_unix: now_unix(),
+                        window_usec,
+                        stalls,
+                    });
+                }
+                interval = sampler.recommended_interval(duty, floor, ceil);
+                // Say so when pacing diverges from what was asked for. Silently
+                // sampling at a third of the requested rate would make every
+                // number quietly wrong.
+                if interval > floor
+                    && interval.abs_diff(announced) > Duration::from_millis(500)
+                {
+                    eprintln!(
+                        "stallwatchd: sweep costs {:.0}ms; pacing to {:.1}s to stay under {:.0}% of a core",
+                        sampler.last_sweep().as_secs_f64() * 1000.0,
+                        interval.as_secs_f64(),
+                        duty * 100.0
+                    );
+                    announced = interval;
                 }
             }
         });

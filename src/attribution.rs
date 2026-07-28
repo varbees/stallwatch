@@ -13,6 +13,7 @@ use crate::{Stall, MAX_STALLS, MIN_REPORTABLE_PCT};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use crate::psi::Snapshot;
 
 /// Share of a parent's stall a single child must own before the parent stops
 /// being considered responsible.
@@ -160,5 +161,181 @@ mod tests {
         // guard it with a test so nobody "optimises" it into a string compare.
         let d = m(&[("/p", 1000), ("/p2", 900)]);
         assert!(is_responsible(Path::new("/p"), 1000, &d));
+    }
+}
+
+
+/// Continuous sampler that retains the previous snapshot.
+///
+/// [`collect`] takes two sweeps of the cgroup tree per call — sample, sleep,
+/// sample — which is correct for a one-shot CLI invocation and wasteful for a
+/// resident daemon, because the closing sweep of one tick is the opening sweep
+/// of the next.
+///
+/// Measured on a 152-cgroup desktop a sweep costs ~10ms, so a 1Hz daemon spent
+/// ~2% of a core on redundant reads. Extrapolated to a 2,000-cgroup Kubernetes
+/// node that is ~26% of a core — a tool that exists to observe contention
+/// would have become a meaningful source of it. Retaining state halves that,
+/// and [`Sampler::recommended_interval`] handles the rest.
+pub struct Sampler {
+    prev: HashMap<PathBuf, Snapshot>,
+    prev_at: Instant,
+    last_sweep: Duration,
+}
+
+impl Sampler {
+    /// Takes the opening snapshot immediately, so the first `tick` has a base.
+    pub fn new() -> Self {
+        let t = Instant::now();
+        let prev = cgroup::sample(&cgroup::all());
+        Self {
+            prev,
+            prev_at: t,
+            last_sweep: t.elapsed(),
+        }
+    }
+
+    /// Cost of the most recent sweep. Exposed so callers can pace themselves.
+    pub fn last_sweep(&self) -> Duration {
+        self.last_sweep
+    }
+
+    /// Sleep interval that keeps sampling under `duty` of one core.
+    ///
+    /// A fixed tick is wrong across three orders of magnitude of cgroup count.
+    /// Rather than make operators discover that, the daemon paces itself to a
+    /// duty-cycle budget and reports the interval it chose.
+    pub fn recommended_interval(&self, duty: f64, floor: Duration, ceil: Duration) -> Duration {
+        let sweep = self.last_sweep.as_secs_f64().max(0.000_1);
+        Duration::from_secs_f64((sweep / duty.clamp(0.001, 1.0)).clamp(
+            floor.as_secs_f64(),
+            ceil.as_secs_f64(),
+        ))
+    }
+
+    /// One sweep, diffed against the previous one.
+    ///
+    /// The window is the real elapsed time since the last sweep, not a
+    /// configured tick: a daemon that is descheduled or paced adaptively would
+    /// otherwise compute percentages against a duration that never happened.
+    pub fn tick(&mut self) -> (Vec<Stall>, u64) {
+        let started = Instant::now();
+        let now = cgroup::sample(&cgroup::all());
+        self.last_sweep = started.elapsed();
+
+        let elapsed_us = self.prev_at.elapsed().as_micros() as u64;
+        let stalls = if elapsed_us == 0 {
+            Vec::new()
+        } else {
+            diff(&self.prev, &now, elapsed_us)
+        };
+
+        self.prev = now;
+        self.prev_at = Instant::now();
+        (stalls, elapsed_us)
+    }
+}
+
+impl Default for Sampler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Shared diff logic between [`collect`] and [`Sampler::tick`].
+fn diff(
+    first: &HashMap<PathBuf, Snapshot>,
+    second: &HashMap<PathBuf, Snapshot>,
+    elapsed_us: u64,
+) -> Vec<Stall> {
+    let mut stalls = Vec::new();
+
+    for res in Resource::ALL {
+        let kind = res.primary_kind();
+        let mut deltas: HashMap<PathBuf, u64> = HashMap::new();
+        for (cg, after) in second {
+            // Absent from the first sample means the cgroup appeared mid-window;
+            // its counter starts from an unknown base, so skip it rather than
+            // report a fabricated delta.
+            let Some(before) = first.get(cg) else { continue };
+            let b = before.get(res).total_for(kind);
+            let a = after.get(res).total_for(kind);
+            // Saturating: counters restart when a cgroup is destroyed and its
+            // path reused, which would otherwise underflow.
+            deltas.insert(cg.clone(), a.saturating_sub(b));
+        }
+
+        for (cg, &d) in &deltas {
+            let pct = d as f64 / elapsed_us as f64 * 100.0;
+            if pct < MIN_REPORTABLE_PCT || !is_responsible(cg, d, &deltas) {
+                continue;
+            }
+            stalls.push(Stall {
+                unit: cgroup::friendly_name(cg),
+                cgroup: cg.to_string_lossy().into_owned(),
+                resource: res,
+                kind,
+                delta_usec: d,
+                pressure_pct: pct,
+                peak_pct: pct,
+            });
+        }
+    }
+
+    stalls.sort_by(|a, b| {
+        b.pressure_pct
+            .partial_cmp(&a.pressure_pct)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    stalls.truncate(MAX_STALLS);
+    stalls
+}
+
+#[cfg(test)]
+mod sampler_tests {
+    use super::*;
+
+    #[test]
+    fn sampler_produces_a_measured_window() {
+        let mut s = Sampler::new();
+        std::thread::sleep(Duration::from_millis(120));
+        let (_stalls, window) = s.tick();
+        // The window is real elapsed time, not a configured constant.
+        assert!(window >= 100_000, "window too short: {window}us");
+        assert!(window < 5_000_000, "window implausibly long: {window}us");
+    }
+
+    #[test]
+    fn sampler_reports_sweep_cost() {
+        let mut s = Sampler::new();
+        s.tick();
+        assert!(s.last_sweep() > Duration::ZERO);
+        assert!(s.last_sweep() < Duration::from_secs(5), "sweep pathologically slow");
+    }
+
+    #[test]
+    fn recommended_interval_scales_with_sweep_cost_and_respects_bounds() {
+        let mut s = Sampler::new();
+        s.tick();
+        let floor = Duration::from_millis(250);
+        let ceil = Duration::from_secs(30);
+        let i = s.recommended_interval(0.02, floor, ceil);
+        assert!(i >= floor && i <= ceil, "out of bounds: {i:?}");
+        // A tighter duty budget must never sample more often.
+        let tight = s.recommended_interval(0.001, floor, ceil);
+        assert!(tight >= i, "tighter budget should slow sampling");
+    }
+
+    #[test]
+    fn consecutive_ticks_do_not_double_count() {
+        // Each tick diffs against the previous sweep, so a delta can never be
+        // attributed to two windows.
+        let mut s = Sampler::new();
+        std::thread::sleep(Duration::from_millis(60));
+        let (_, w1) = s.tick();
+        std::thread::sleep(Duration::from_millis(60));
+        let (_, w2) = s.tick();
+        assert!(w1 > 0 && w2 > 0);
+        assert!(w2 < 3_000_000, "second window should not include the first");
     }
 }
