@@ -1,0 +1,26 @@
+[package]
+name = "stallwatch"
+version = "0.1.0"
+edition = "2024"
+description = "Name the systemd unit that is stalling your Linux system, and explain why."
+license = "MIT OR Apache-2.0"
+categories = ["command-line-utilities", "os::linux-apis"]
+keywords = ["psi", "cgroup", "diagnostics", "performance", "linux"]
+
+# Zero dependencies is load-bearing, not an aesthetic choice: the engine must
+# stay reducible to a C ABI so C/C++ consumers (btop, ksystemstats, GNOME's
+# monitor) can adopt it without a Rust toolchain entering their build.
+[dependencies]
+
+[lib]
+name = "stallwatch"
+path = "src/lib.rs"
+
+[[bin]]
+name = "stallwatch"
+path = "src/bin/stallwatch.rs"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
