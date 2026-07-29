@@ -1,0 +1,41 @@
+# Verified working: a read-only hostPath mount of /sys/fs/cgroup is sufficient.
+# No privileged mode, no capabilities, no host PID namespace.
+#
+# Without the mount, a container sees ONLY its own cgroup — whose pressure
+# files read zero — and would report "no stalls" while the node is on fire.
+# Note also that /proc/pressure is NOT namespaced: a container reading it sees
+# the HOST's values and cannot tell.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: stallwatch
+spec:
+  selector:
+    matchLabels: {app: stallwatch}
+  template:
+    metadata:
+      labels: {app: stallwatch}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9836"
+    spec:
+      containers:
+        - name: stallwatchd
+          image: ghcr.io/varbees/stallwatch:latest
+          args: ["--metrics-listen", "0.0.0.0:9836", "--duty", "2"]
+          ports:
+            - {name: metrics, containerPort: 9836}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 20m, memory: 16Mi}
+            limits:   {memory: 64Mi}
+          volumeMounts:
+            - {name: cgroup, mountPath: /sys/fs/cgroup, readOnly: true}
+      volumes:
+        - name: cgroup
+          hostPath: {path: /sys/fs/cgroup, type: Directory}

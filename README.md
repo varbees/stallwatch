@@ -238,9 +238,31 @@ That heuristic would also have fired on every healthy drive of the same family. 
 
 **It never fixes anything.** stallwatch is read-only. It prints the command *you* might run and shows the exact `/sys` path every number came from, so you can re-read the kernel and check its arithmetic. It is an instrument, not an optimiser.
 
+## Containers and Kubernetes
+
+Verified on Debian 11, Ubuntu 20.04 and Alpine 3.19 using the static musl
+binary — no glibc, no systemd required to *run*.
+
+```sh
+# A container sees only its OWN cgroup by default, whose pressure reads zero.
+# Mount the host tree read-only and attribution works, unprivileged:
+podman run --rm -v /sys/fs/cgroup:/sys/fs/cgroup:ro stallwatch
+```
+
+A `DaemonSet` needs nothing more than that read-only `hostPath` — no privileged
+mode, no capabilities, no host PID namespace. See [`deploy/daemonset.yaml`](deploy/daemonset.yaml).
+
+**Two traps worth knowing.** Without the mount, stallwatch reports "no stalls"
+while the node is on fire, because the container's own cgroup genuinely is idle.
+And `/proc/pressure` is **not namespaced** — a container reading it sees the
+host's values with no indication that they aren't its own.
+
 ## Limitations
 
-- **cgroup v2 and systemd only.** No v1 fallback.
+- **cgroup v2 only.** No v1 fallback.
+- **systemd naming.** Attribution works anywhere cgroup v2 does, but the
+  human-readable names assume systemd's layout. On OpenRC/runit you get raw
+  cgroup paths.
 - **Per-process drill-down is a second window.** `--processes` cannot know which
   cgroup is guilty until the first pass finishes, so it samples again straight
   after. For a sustained stall that is fine; a one-off spike may be gone, and it
