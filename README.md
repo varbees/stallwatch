@@ -1,7 +1,6 @@
 # stallwatch
 
 [![CI](https://github.com/varbees/stallwatch/actions/workflows/ci.yml/badge.svg)](https://github.com/varbees/stallwatch/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/stallwatch.svg)](https://crates.io/crates/stallwatch)
 
 **Your Linux desktop freezes. `htop` says the CPU is idle and you have free RAM. So what stopped?**
 
@@ -75,7 +74,7 @@ every download is checked against the `SHA256SUMS` published with the release â€
 a mismatch aborts rather than installs. x86_64 and aarch64.
 
 ```sh
-cargo install stallwatch          # from crates.io
+cargo install --git https://github.com/varbees/stallwatch
 cargo build --release             # from a clone
 ```
 
