@@ -1,0 +1,16 @@
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "stallwatch",
+  "compatibility_date": "2026-07-04",
+
+  // Pure static assets — there is no Worker script. The page is one HTML file
+  // with no build step, no framework and no external requests, which is the
+  // same constraint the binary it describes is held to.
+  "assets": {
+    "directory": "./public"
+  },
+
+  "routes": [
+    { "pattern": "stallwatch.antharmaya.com", "custom_domain": true }
+  ]
+}

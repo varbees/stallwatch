@@ -42,7 +42,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        target: [x86_64-unknown-linux-musl, x86_64-unknown-linux-gnu]
+        target:
+          - x86_64-unknown-linux-musl
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-musl
     steps:
       - uses: actions/checkout@v4
 
@@ -54,7 +57,12 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
+      # No C is linked into this binary, so aarch64 needs no cross toolchain —
+      # rust-lld links the static musl target directly. Verified producing a
+      # "statically linked, stripped" ARM aarch64 ELF.
       - run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
 
       - name: package
         run: |

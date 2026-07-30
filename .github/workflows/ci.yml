@@ -54,3 +54,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo publish --dry-run
         run: cargo publish --dry-run
+
+  installer:
+    name: installer is valid and served copy matches
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The site serves its own copy so `curl | sh` needs no second host. Two
+      # copies of a script that installs binaries is exactly the kind of thing
+      # that silently drifts, so it is a build failure rather than a habit.
+      - name: served copy is identical
+        run: diff install.sh site/public/install.sh
+
+      - name: shellcheck
+        run: shellcheck install.sh
+
+      - name: POSIX sh syntax
+        run: sh -n install.sh

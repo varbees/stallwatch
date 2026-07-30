@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>stallwatch — name the unit that froze your Linux box</title>
+<meta name="description" content="Linux has measured stall time in every cgroup since 4.20. Almost nothing reads it. stallwatch names the systemd unit — and the process inside it — that stopped your system. Zero dependencies, no root.">
+<link rel="canonical" href="https://stallwatch.antharmaya.com/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="stallwatch — name the unit that froze your Linux box">
+<meta property="og:description" content="Your machine froze. Every monitor says it's fine. stallwatch reads per-cgroup Pressure Stall Information and names the unit, then the process inside it.">
+<meta property="og:url" content="https://stallwatch.antharmaya.com/">
+<meta name="twitter:card" content="summary">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%230a0c11'/><rect x='2' y='7' width='2' height='6' fill='%23ff7a45'/><rect x='5' y='4' width='2' height='9' fill='%23ff7a45'/><rect x='8' y='9' width='2' height='4' fill='%23ff7a45'/><rect x='11' y='3' width='2' height='10' fill='%23ff7a45'/></svg>">
+<style>
+/* ─────────────────────────────────────────────────────────────────
+   stallwatch — one file, no webfonts, no external requests.
+   The page carries the same constraint as the binary it describes.
+   ───────────────────────────────────────────────────────────────── */
+:root{
+  --void:#0a0c11;      /* deep blue-black; never pure #000 */
+  --panel:#0f131b;
+  --line:#1c2330;
+  --dim:#67748a;       /* the calm reading — deliberately drained */
+  --text:#c9d1dd;
+  --bright:#e8edf5;
+  --ember:#ff7a45;     /* the one accent: blocked time */
+  --ember-d:#c4441f;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Mono",Menlo,"DejaVu Sans Mono",Consolas,monospace;
+  --rail:clamp(1rem,4vw,2.5rem);
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%; color-scheme:dark}
+body{
+  margin:0; background:var(--void); color:var(--text);
+  font-family:var(--mono); font-size:15px; line-height:1.7;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--bright); text-decoration-color:var(--line); text-underline-offset:3px}
+a:hover{text-decoration-color:var(--ember)}
+:focus-visible{outline:2px solid var(--ember); outline-offset:3px}
+.wrap{max-width:74ch; margin:0 auto; padding:0 var(--rail)}
+
+/* ── nav ────────────────────────────────────────────────── */
+.nav{border-bottom:1px solid var(--line)}
+.nav .wrap{display:flex; align-items:center; justify-content:space-between; gap:1rem; height:52px}
+.brand{color:var(--bright); font-weight:700; letter-spacing:-.02em; text-decoration:none}
+.brand b{color:var(--ember); font-weight:700}
+.nav-links{display:flex; gap:1.25rem; font-size:13px}
+.nav-links a{color:var(--dim); text-decoration:none}
+.nav-links a:hover{color:var(--text)}
+
+/* ── hero ───────────────────────────────────────────────── */
+.hero{padding:clamp(3rem,9vw,6rem) 0 clamp(2rem,5vw,3rem)}
+.eyebrow{color:var(--dim); font-size:12px; letter-spacing:.14em; text-transform:uppercase; margin:0 0 1.5rem}
+h1{
+  margin:0 0 1.25rem; color:var(--bright); font-weight:700;
+  font-size:clamp(1.7rem,5.2vw,2.9rem); line-height:1.16; letter-spacing:-.035em;
+}
+h1 .lie{color:var(--dim)}
+.lede{margin:0; max-width:62ch; color:var(--text)}
+.lede em{color:var(--bright); font-style:normal}
+
+/* ── signature: two instruments, one second ─────────────── */
+.instr{margin:clamp(2.5rem,7vw,4rem) 0 0; border:1px solid var(--line); background:var(--panel); border-radius:3px}
+.instr-hd{
+  display:flex; justify-content:space-between; gap:1rem; flex-wrap:wrap;
+  padding:.6rem .9rem; border-bottom:1px solid var(--line);
+  font-size:11.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--dim);
+}
+.row{display:grid; grid-template-columns:12ch 1fr; gap:.9rem; align-items:center; padding:1rem .9rem}
+.row + .row{border-top:1px solid var(--line)}
+.row-label{font-size:12px; color:var(--dim); line-height:1.35}
+.track{position:relative; height:34px; display:flex; gap:1px; overflow:hidden}
+.reveal{clip-path:inset(0 100% 0 0); animation:sweep 1.15s cubic-bezier(.22,1,.36,1) .25s forwards}
+.row:nth-child(3) .reveal{animation-delay:.75s}
+@keyframes sweep{to{clip-path:inset(0 0 0 0)}}
+/* calm instrument: a flat, boring sparkline */
+.calm{width:100%; height:100%; display:block}
+.calm path{fill:none; stroke:var(--dim); stroke-width:1.25; opacity:.75}
+/* stall instrument: blocked microseconds as they actually fall */
+.track span{background:transparent}
+.track .blk{background:var(--ember); opacity:.92}
+.track .blk.part{background:var(--ember-d); opacity:.85}
+/* `p` sets a bottom margin globally; the verdict sits inside a grid row and
+   must not inherit it, or every instrument row gains phantom trailing space. */
+.verdict{margin:.5rem 0 0; font-size:12.5px; color:var(--dim)}
+.verdict.bad{color:var(--ember)}
+.axis{
+  display:flex; justify-content:space-between;
+  padding:.45rem .9rem .7rem calc(.9rem + 12ch + .9rem);
+  font-size:11px; color:var(--dim); border-top:1px solid var(--line);
+}
+.thesis{margin:.9rem 0 0; color:var(--dim); font-size:13px}
+.thesis b{color:var(--bright); font-weight:400}
+
+/* ── install ────────────────────────────────────────────── */
+.install{margin:clamp(2rem,5vw,3rem) 0 0}
+.cmd{
+  display:flex; align-items:center; gap:.75rem; padding:.85rem 1rem;
+  border:1px solid var(--line); border-left:2px solid var(--ember);
+  background:var(--panel); border-radius:3px; overflow-x:auto;
+}
+.cmd code{flex:1; white-space:nowrap; color:var(--bright); font-size:13.5px}
+.cmd .p{color:var(--ember); user-select:none}
+.copy{
+  flex:none; background:transparent; border:1px solid var(--line); color:var(--dim);
+  font:inherit; font-size:11.5px; padding:.2rem .6rem; border-radius:3px; cursor:pointer;
+}
+.copy:hover{color:var(--bright); border-color:var(--dim)}
+.copy[data-done="1"]{color:var(--ember); border-color:var(--ember)}
+.install-note{margin:.7rem 0 0; font-size:12.5px; color:var(--dim)}
+.install-note a{color:var(--dim)}
+
+/* ── section rules — how CLI output delimits itself ─────── */
+section{padding:clamp(2.5rem,7vw,4.5rem) 0 0}
+.rule{display:flex; align-items:center; gap:.75rem; margin:0 0 1.5rem}
+.rule h2{
+  margin:0; font-size:13px; font-weight:700; color:var(--bright);
+  letter-spacing:.06em; text-transform:lowercase; white-space:nowrap;
+}
+.rule::before{content:"──"; color:var(--line)}
+.rule::after{content:""; flex:1; height:1px; background:var(--line)}
+p{margin:0 0 1.1rem; max-width:66ch}
+p:last-child{margin-bottom:0}
+.muted{color:var(--dim)}
+strong{color:var(--bright); font-weight:700}
+
+/* ── terminal output ────────────────────────────────────── */
+pre{
+  margin:0 0 1.2rem; padding:1rem; overflow-x:auto;
+  border:1px solid var(--line); background:var(--panel); border-radius:3px;
+  font-size:12.5px; line-height:1.65; color:var(--text);
+}
+pre .p{color:var(--ember)}
+pre .hi{color:var(--ember)}
+pre .c{color:var(--dim)}
+pre .w{color:var(--bright)}
+figcaption{margin:0 0 1.2rem; font-size:12.5px; color:var(--dim)}
+figure{margin:0}
+
+/* ── comparison: the two readings, as text ──────────────── */
+.cmp{border:1px solid var(--line); border-radius:3px; overflow:hidden; margin:0 0 1.2rem}
+.cmp div{display:flex; gap:1rem; padding:.7rem 1rem; font-size:13px; align-items:baseline; flex-wrap:wrap}
+.cmp div + div{border-top:1px solid var(--line)}
+.cmp code{flex:none; color:var(--text)}
+.cmp .say{color:var(--dim); font-size:12.5px; margin-left:auto}
+.cmp .bad code{color:var(--ember)}
+.cmp .bad .say{color:var(--ember)}
+
+/* ── list of interfaces / refusals ──────────────────────── */
+.items{margin:0; padding:0; list-style:none}
+.items li{padding:.95rem 0; border-top:1px solid var(--line)}
+.items li:last-child{border-bottom:1px solid var(--line)}
+.items h3{margin:0 0 .3rem; font-size:13.5px; font-weight:700; color:var(--bright)}
+.items p{margin:0; font-size:13.5px; color:var(--dim); max-width:64ch}
+.items code{color:var(--text)}
+
+/* ── specs ──────────────────────────────────────────────── */
+.specs{display:flex; flex-wrap:wrap; gap:.5rem 2rem; padding:1.1rem 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); margin:0 0 1.2rem}
+.spec{font-size:13px}
+.spec b{color:var(--ember); font-weight:700}
+.spec span{color:var(--dim)}
+
+/* ── footer ─────────────────────────────────────────────── */
+footer{margin-top:clamp(3rem,8vw,5rem); border-top:1px solid var(--line); padding:1.5rem 0 3rem}
+footer .wrap{display:flex; justify-content:space-between; gap:1rem; flex-wrap:wrap; font-size:12.5px; color:var(--dim)}
+footer a{color:var(--dim)}
+
+@media (max-width:560px){
+  .row{grid-template-columns:1fr; gap:.5rem}
+  .axis{padding-left:.9rem}
+  .nav-links{gap:.9rem}
+}
+@media (prefers-reduced-motion:reduce){
+  .reveal{clip-path:none; animation:none}
+  *{transition:none!important}
+}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap">
+    <a class="brand" href="/">stall<b>watch</b></a>
+    <div class="nav-links">
+      <a href="https://github.com/varbees/stallwatch">github</a>
+      <a href="https://crates.io/crates/stallwatch">crates.io</a>
+      <a href="https://antharmaya.com">antharmaya</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Antharmaya Labs · MIT / Apache-2.0</p>
+    <h1>Your machine froze.<br><span class="lie">Every monitor says it&rsquo;s fine.</span></h1>
+    <p class="lede">
+      Linux has measured how long tasks spend <em>blocked</em> since 4.20, and it writes
+      that number into every cgroup on the system. Almost nothing reads it.
+      stallwatch does, and names the systemd unit &mdash; then the process inside it &mdash;
+      that stopped your machine.
+    </p>
+
+    <!-- Signature: the same ten seconds, read by two instruments. -->
+    <div class="instr">
+      <div class="instr-hd"><span>one 10-second window</span><span>two instruments</span></div>
+
+      <div class="row">
+        <div class="row-label">top&nbsp;· htop<br>free&nbsp;· uptime</div>
+        <div>
+          <div class="track">
+            <svg class="calm reveal" viewBox="0 0 600 34" preserveAspectRatio="none" aria-hidden="true">
+              <path d="M0 26 L40 25 L80 27 L120 24 L160 26 L200 25 L240 27 L280 25 L320 26 L360 24 L400 26 L440 27 L480 25 L520 26 L560 25 L600 26"/>
+            </svg>
+          </div>
+          <p class="verdict">cpu 2% · 8.1 GB free · load 0.41 — <span>nothing to report</span></p>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="row-label">/proc/pressure<br>io &mdash; <span style="color:var(--ember)">full</span></div>
+        <div>
+          <div class="track reveal" aria-hidden="true">
+            <span style="flex:6"></span><span class="blk" style="flex:9"></span>
+            <span style="flex:3"></span><span class="blk part" style="flex:4"></span>
+            <span class="blk" style="flex:11"></span><span style="flex:5"></span>
+            <span class="blk" style="flex:7"></span><span style="flex:2"></span>
+            <span class="blk part" style="flex:3"></span><span style="flex:6"></span>
+            <span class="blk" style="flex:14"></span><span style="flex:4"></span>
+            <span class="blk" style="flex:5"></span><span style="flex:3"></span>
+            <span class="blk part" style="flex:8"></span><span style="flex:7"></span>
+            <span class="blk" style="flex:12"></span><span style="flex:3"></span>
+          </div>
+          <p class="verdict bad">io full avg10=51.3 — every non-idle task blocked, half the window</p>
+        </div>
+      </div>
+
+      <div class="axis"><span>0s</span><span>5s</span><span>10s</span></div>
+    </div>
+    <p class="thesis"><b>Same ten seconds. One of these instruments is lying to you.</b>
+      Utilisation measures what fraction of a resource is busy. It cannot tell
+      &ldquo;working fine&rdquo; from &ldquo;completely jammed.&rdquo;</p>
+
+    <div class="install">
+      <div class="cmd">
+        <span class="p">$</span>
+        <code id="cmd">curl -fsSL https://stallwatch.antharmaya.com/install.sh | sh</code>
+        <button class="copy" id="copy" type="button">copy</button>
+      </div>
+      <p class="install-note">
+        Two static binaries into <code>~/.local/bin</code>. No sudo, no package manager,
+        every download checksum-verified. x86_64 and aarch64.
+        Or <code>cargo install stallwatch</code>.
+      </p>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<section>
+  <div class="wrap">
+    <div class="rule"><h2>what it tells you</h2></div>
+    <figure>
+<pre><span class="p">$</span> stallwatch --processes
+
+Over the last 1.0s, these units stalled the system:
+
+    <span class="hi">83.5%</span>  io      com.mitchellh.ghostty  — frozen 1015ms waiting on io
+    <span class="hi">11.2%</span>  io      systemd-journald       — frozen  114ms waiting on io
+     2.0%  cpu     zen (flatpak)          — frozen   21ms waiting on cpu
+
+  worst cgroup: /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/
+                app.slice/app-com.mitchellh.ghostty.service
+
+  inside ghostty-surface-transient:
+    <span class="w">active   83% blocked  dd [214461]  ·  5 MiB of disk IO</span>
+
+   <span class="c">· btrfs [transient]: working through an async discard (TRIM) backlog:
+     131410 extents / 3.3 GiB still queued after a large delete. This runs in
+     the kernel, so the disk looks busy while no process shows IO delay. It
+     clears on its own — do not go hunting for a runaway program.</span>
+</pre>
+      <figcaption>Real output, not a mockup — a <code>dd</code> saturating a real NVMe, diagnosed live.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="rule"><h2>why utilisation lies</h2></div>
+    <div class="cmp">
+      <div><code>cpu&nbsp;&nbsp;some avg10=1.6</code><span class="say">the CPU is idle</span></div>
+      <div class="bad"><code>io&nbsp;&nbsp;&nbsp;full avg10=51.3</code><span class="say">everything is frozen half the time</span></div>
+    </div>
+    <p>
+      A CPU graph reports a healthy machine here. In fact, for 51% of those ten seconds,
+      <strong>every non-idle task on the system was blocked</strong>.
+    </p>
+    <p>
+      That second number is Pressure Stall Information. <code>some</code> means at least
+      one task was blocked; <code>full</code> means every non-idle task was blocked at once.
+      The kernel writes <code>cpu.pressure</code>, <code>memory.pressure</code> and
+      <code>io.pressure</code> into <strong>every cgroup</strong> — so the data needed to
+      name a culprit has been sitting there since 2018.
+    </p>
+    <p class="muted">
+      htop, node_exporter and KDE&rsquo;s system monitor all read the system-wide
+      <code>/proc/pressure/*</code> files and stop. You learn <em>that</em> the machine
+      stalled, never <em>who</em> stalled it. That gap is the whole tool.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="rule"><h2>it blames the cause, not the victim</h2></div>
+    <p>
+      Two things make naming a culprit harder than reading a number, and stallwatch
+      learned both by getting them wrong first.
+    </p>
+    <p>
+      <strong>Kernel accounting is hierarchical.</strong> A stall inside
+      <code>firefox.scope</code> also counts against <code>app.slice</code>,
+      <code>user@1000.service</code>, <code>user.slice</code> and the root. Report that
+      naively and the answer is always <code>user.slice</code>, which helps nobody.
+      stallwatch walks the tree and blames a cgroup only when no single child owns
+      &ge;80% of its stall.
+    </p>
+    <p>
+      <strong>PSI blames the victim.</strong> It measures who is <em>blocked</em>. A
+      <code>dd</code> saturating the disk sits in a sibling cgroup showing a fraction of
+      the pressure of the terminal it is starving — so drilling into the worst cgroup
+      finds the casualty and misses the culprit. High bytes with low blocking is
+      <em>causing</em> the stall; high blocking with low bytes is <em>suffering</em> it.
+      Both are reported, labelled.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="rule"><h2>four ways to ask</h2></div>
+    <ul class="items">
+      <li>
+        <h3>stallwatch</h3>
+        <p>One-second snapshot. <code>--processes</code> names the process, <code>--json</code> for machines, <code>--watch</code> to follow.</p>
+      </li>
+      <li>
+        <h3>stallwatchd &nbsp;·&nbsp; --since 30</h3>
+        <p>A freeze is over by the time you can open a terminal and type. The daemon records into a bounded ring so you can ask afterwards. Peaks are kept, never averaged away — a 2s freeze inside a 60s window averages to 3% and disappears.</p>
+      </li>
+      <li>
+        <h3>Varlink &nbsp;·&nbsp; dev.stallwatch.Monitor</h3>
+        <p>Queryable with systemd&rsquo;s own <code>varlinkctl</code>, no bespoke client. Chosen over D-Bus specifically because speaking D-Bus means either a dependency or hand-rolled SASL, and both were worse.</p>
+      </li>
+      <li>
+        <h3>Prometheus &nbsp;·&nbsp; /metrics</h3>
+        <p>Names aligned with the <code>container_pressure_*</code> vocabulary cAdvisor and Kubernetes already settled on. Validated against the official <code>prometheus_client</code> parser, not just against its own tests.</p>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="rule"><h2>what it refuses to do</h2></div>
+    <p class="muted">
+      A diagnostic that guesses is worse than no diagnostic, because you act on it.
+      These are constraints in the code, not intentions.
+    </p>
+    <ul class="items">
+      <li>
+        <h3>It will not claim causation from correlation</h3>
+        <p>A drive here read 97&nbsp;°C. stallwatch says nothing about it — that sensor
+          publishes no threshold of its own, and the drive&rsquo;s throttle counters were
+          zero across 4,979 power-on hours. It had never once throttled. A temperature
+          without a threshold is not evidence, so it is never reported as one.</p>
+      </li>
+      <li>
+        <h3>It will not ask for root</h3>
+        <p>Everything is read from <code>/proc</code> and <code>/sys</code> as you.
+          A diagnostic that needs privileges is a diagnostic people don&rsquo;t run.</p>
+      </li>
+      <li>
+        <h3>It will not fix anything</h3>
+        <p>Strictly read-only. It has no tuning knobs, drops no caches, kills no
+          processes. It tells you what stopped; what to do about it is yours.</p>
+      </li>
+      <li>
+        <h3>It will not grow a dependency tree</h3>
+        <p>Zero crates, <code>std</code> only — so the engine stays reducible to a C ABI
+          and a C or C++ project could adopt it without a Rust toolchain entering
+          their build.</p>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="rule"><h2>specifics</h2></div>
+    <div class="specs">
+      <span class="spec"><b>0</b> <span>dependencies</span></span>
+      <span class="spec"><b>516 KB</b> <span>static binary</span></span>
+      <span class="spec"><b>81</b> <span>tests</span></span>
+      <span class="spec"><b>0.9%</b> <span>of one core, resident</span></span>
+      <span class="spec"><b>3.0 MB</b> <span>RSS</span></span>
+    </div>
+    <p class="muted">
+      Needs a kernel with <code>CONFIG_PSI=y</code>, which is near-universal. If your
+      distribution builds with <code>CONFIG_PSI_DEFAULT_DISABLED=y</code> — openSUSE
+      historically did — add <code>psi=1</code> to the kernel command line.
+      Runs unprivileged in a container if you mount the host cgroup tree read-only;
+      note that <code>/proc/pressure</code> is <em>not</em> namespaced, so a container
+      reading it sees the host&rsquo;s numbers as if they were its own.
+    </p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Antharmaya Labs · built in India</span>
+    <span>no webfonts, no trackers, one file — same rule as the binary</span>
+  </div>
+</footer>
+
+<script>
+// The only script on the page. No framework, no external request.
+document.getElementById('copy').addEventListener('click', function () {
+  var btn = this;
+  navigator.clipboard.writeText(document.getElementById('cmd').textContent).then(function () {
+    btn.textContent = 'copied';
+    btn.dataset.done = '1';
+    setTimeout(function () { btn.textContent = 'copy'; delete btn.dataset.done; }, 1600);
+  }).catch(function () {
+    btn.textContent = 'press ⌘C';
+  });
+});
+</script>
+</body>
+</html>

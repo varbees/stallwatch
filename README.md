@@ -28,8 +28,8 @@ Over the last 1.0s, these units stalled the system:
      — do not go hunting for a runaway program. Roughly 3 min at the 1000 IOPS limit.
 ```
 
-No privileges. No dependencies. 393 KB. The daemon is optional and only needed
-for history.
+No privileges. No dependencies. A 432 KB binary, or 516 KB fully static. The
+daemon is optional and only needed for history.
 
 ---
 
@@ -67,9 +67,16 @@ That gap is what this fills.
 ## Install
 
 ```sh
-cargo install --path .
-# or
-cargo build --release && cp target/release/stallwatch ~/.local/bin/
+curl -fsSL https://stallwatch.antharmaya.com/install.sh | sh
+```
+
+Puts two static binaries in `~/.local/bin`. No sudo, no package manager, and
+every download is checked against the `SHA256SUMS` published with the release —
+a mismatch aborts rather than installs. x86_64 and aarch64.
+
+```sh
+cargo install stallwatch          # from crates.io
+cargo build --release             # from a clone
 ```
 
 Needs a kernel with `CONFIG_PSI=y` (near-universal). If your distribution builds with `CONFIG_PSI_DEFAULT_DISABLED=y` — openSUSE historically did — add `psi=1` to the kernel command line.
