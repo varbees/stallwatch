@@ -301,7 +301,10 @@ mod tests {
     fn empty_report_is_valid_json_shape() {
         let j = Report::default().to_json();
         assert!(j.starts_with('{') && j.ends_with('}'), "{j}");
-        assert!(j.contains("\"stalls\": [") && j.contains("\"warnings\": ["), "{j}");
+        assert!(
+            j.contains("\"stalls\": [") && j.contains("\"warnings\": ["),
+            "{j}"
+        );
     }
 
     #[test]

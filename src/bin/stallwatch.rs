@@ -141,8 +141,8 @@ fn query_daemon(secs: u64, json: bool) -> std::io::Result<String> {
 /// A process with high bytes and low blocking is causing the stall; high
 /// blocking with low bytes is suffering it.
 fn drill_top(report: &stallwatch::Report, window_ms: u64) -> String {
-    use std::path::Path;
     use std::collections::HashSet;
+    use std::path::Path;
 
     // Split the budget across the cgroups we probe so the flag costs roughly
     // one extra window regardless of how many we look at.
@@ -201,7 +201,8 @@ fn drill_top(report: &stallwatch::Report, window_ms: u64) -> String {
     if !found_any {
         return "\n  no process caught blocking or doing disk IO in a follow-up window\n\
              \x20 (the stall may have ended, or the work is kernel-side — see any\n\
-             \x20  transient warning above)\n".to_string();
+             \x20  transient warning above)\n"
+            .to_string();
     }
     if !stallwatch::process::delayacct_enabled() {
         o.push_str(

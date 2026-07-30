@@ -9,7 +9,7 @@
 //! most [`crate::MAX_STALLS`] entries. A resident diagnostic that grows without
 //! bound would be its own bug report.
 
-use crate::{Report, Stall, MAX_STALLS, MIN_REPORTABLE_PCT};
+use crate::{MAX_STALLS, MIN_REPORTABLE_PCT, Report, Stall};
 use std::collections::{HashMap, VecDeque};
 
 /// One sampling tick.
@@ -197,15 +197,27 @@ mod tests {
             r.push(frame(100 + i, vec![]));
         }
         let rep = r.aggregate(0);
-        assert!(rep.stalls[0].pressure_pct < 2.0, "average should look small");
-        assert!((rep.stalls[0].peak_pct - 94.0).abs() < 0.01, "peak must survive");
+        assert!(
+            rep.stalls[0].pressure_pct < 2.0,
+            "average should look small"
+        );
+        assert!(
+            (rep.stalls[0].peak_pct - 94.0).abs() < 0.01,
+            "peak must survive"
+        );
     }
 
     #[test]
     fn ranks_by_peak_not_average() {
         let mut r = Ring::new(10);
         // "steady" has a higher total; "spike" froze the machine harder once.
-        r.push(frame(1, vec![stall("steady", 200_000, 20.0), stall("spike", 900_000, 90.0)]));
+        r.push(frame(
+            1,
+            vec![
+                stall("steady", 200_000, 20.0),
+                stall("spike", 900_000, 90.0),
+            ],
+        ));
         r.push(frame(2, vec![stall("steady", 200_000, 20.0)]));
         r.push(frame(3, vec![stall("steady", 200_000, 20.0)]));
         r.push(frame(4, vec![stall("steady", 200_000, 20.0)]));
@@ -218,14 +230,23 @@ mod tests {
     fn noise_is_filtered_on_peak_not_average() {
         let mut r = Ring::new(128);
         // A brief hard freeze must survive; a permanently trivial unit must not.
-        r.push(frame(1, vec![stall("spike", 900_000, 90.0), stall("noise", 3_000, 0.3)]));
+        r.push(frame(
+            1,
+            vec![stall("spike", 900_000, 90.0), stall("noise", 3_000, 0.3)],
+        ));
         for i in 2..100 {
             r.push(frame(i, vec![stall("noise", 3_000, 0.3)]));
         }
         let rep = r.aggregate(0);
         let units: Vec<&str> = rep.stalls.iter().map(|s| s.unit.as_str()).collect();
-        assert!(units.contains(&"spike"), "brief freeze must survive: {units:?}");
-        assert!(!units.contains(&"noise"), "sub-threshold noise must be dropped: {units:?}");
+        assert!(
+            units.contains(&"spike"),
+            "brief freeze must survive: {units:?}"
+        );
+        assert!(
+            !units.contains(&"noise"),
+            "sub-threshold noise must be dropped: {units:?}"
+        );
     }
 
     #[test]

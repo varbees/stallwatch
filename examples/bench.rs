@@ -1,8 +1,8 @@
 //! Measure attribution scaling for real instead of projecting it.
+use stallwatch::attribution::Responsibility;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
-use stallwatch::attribution::Responsibility;
 
 /// Synthetic cgroup tree shaped like a busy node: slices -> services -> scopes.
 fn tree(n: usize) -> HashMap<PathBuf, u64> {
@@ -26,7 +26,10 @@ fn tree(n: usize) -> HashMap<PathBuf, u64> {
 }
 
 fn main() {
-    println!("{:>7}  {:>12}  {:>14}  {:>10}", "cgroups", "build (ms)", "queries (ms)", "per-cgroup");
+    println!(
+        "{:>7}  {:>12}  {:>14}  {:>10}",
+        "cgroups", "build (ms)", "queries (ms)", "per-cgroup"
+    );
     let mut prev: Option<(f64, f64)> = None;
     for n in [150usize, 500, 1000, 2000, 5000, 10000] {
         let d = tree(n);
@@ -37,15 +40,24 @@ fn main() {
         let t = Instant::now();
         let mut kept = 0;
         for (p, &delta) in &d {
-            if r.is_responsible(p, delta) { kept += 1; }
+            if r.is_responsible(p, delta) {
+                kept += 1;
+            }
         }
         let query = t.elapsed().as_secs_f64() * 1e3;
 
         let total = build + query;
-        let growth = prev.map(|(pn, pt)| format!("{:.2}x per {:.2}x n", total / pt, d.len() as f64 / pn));
-        println!("{:>7}  {:>12.2}  {:>14.2}  {:>10.4}   {}  [{} responsible]",
-                 d.len(), build, query, total / d.len() as f64,
-                 growth.unwrap_or_default(), kept);
+        let growth =
+            prev.map(|(pn, pt)| format!("{:.2}x per {:.2}x n", total / pt, d.len() as f64 / pn));
+        println!(
+            "{:>7}  {:>12.2}  {:>14.2}  {:>10.4}   {}  [{} responsible]",
+            d.len(),
+            build,
+            query,
+            total / d.len() as f64,
+            growth.unwrap_or_default(),
+            kept
+        );
         prev = Some((d.len() as f64, total));
     }
     println!();

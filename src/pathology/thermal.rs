@@ -122,7 +122,11 @@ mod tests {
     fn within_margin_reports_without_claiming_causation() {
         let w = assess("Composite", 78.0, Some(82.0)).expect("should report");
         assert_eq!(w.severity, Severity::Note);
-        assert!(w.message.contains("not proof of throttling"), "{}", w.message);
+        assert!(
+            w.message.contains("not proof of throttling"),
+            "{}",
+            w.message
+        );
         assert!(w.message.contains("Trans Count"), "{}", w.message);
     }
 

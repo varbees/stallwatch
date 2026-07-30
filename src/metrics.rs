@@ -184,7 +184,11 @@ fn pathology_series() -> String {
                 .unwrap_or("unknown")
                 .to_string();
             let read = |p: &str| -> Option<u64> {
-                std::fs::read_to_string(base.join(p)).ok()?.trim().parse().ok()
+                std::fs::read_to_string(base.join(p))
+                    .ok()?
+                    .trim()
+                    .parse()
+                    .ok()
             };
 
             let mut allocated = 0u64;
@@ -241,10 +245,18 @@ fn pathology_series() -> String {
             }
             for idx in 1..=8 {
                 let read = |p: String| -> Option<u64> {
-                    std::fs::read_to_string(dir.join(p)).ok()?.trim().parse().ok()
+                    std::fs::read_to_string(dir.join(p))
+                        .ok()?
+                        .trim()
+                        .parse()
+                        .ok()
                 };
-                let Some(t) = read(format!("temp{idx}_input")) else { continue };
-                let Some(crit) = read(format!("temp{idx}_crit")) else { continue };
+                let Some(t) = read(format!("temp{idx}_input")) else {
+                    continue;
+                };
+                let Some(crit) = read(format!("temp{idx}_crit")) else {
+                    continue;
+                };
                 let label = std::fs::read_to_string(dir.join(format!("temp{idx}_label")))
                     .map(|s| s.trim().to_string())
                     .unwrap_or_else(|_| format!("temp{idx}"));
@@ -270,18 +282,30 @@ fn pathology_series() -> String {
         }
         let _ = write!(out, "# HELP {name} {help}\n# TYPE {name} gauge\n{body}");
     };
-    family(&mut out,
+    family(
+        &mut out,
         "Device space not yet claimed by any block group. Near zero means writes stall hunting fragmented chunks even though df shows free space.",
-        "stallwatch_btrfs_unallocated_bytes", &unalloc);
-    family(&mut out,
+        "stallwatch_btrfs_unallocated_bytes",
+        &unalloc,
+    );
+    family(
+        &mut out,
         "Extents awaiting async TRIM. Kernel-side work: the disk looks busy while no process shows IO delay. Transient.",
-        "stallwatch_btrfs_discard_queued_extents", &discard);
-    family(&mut out,
+        "stallwatch_btrfs_discard_queued_extents",
+        &discard,
+    );
+    family(
+        &mut out,
         "Drive temperature. Only sensors publishing their own critical threshold are exported; auxiliary sensors read high on healthy hardware.",
-        "stallwatch_drive_temperature_celsius", &temp);
-    family(&mut out,
+        "stallwatch_drive_temperature_celsius",
+        &temp,
+    );
+    family(
+        &mut out,
         "The drive's own published critical threshold.",
-        "stallwatch_drive_temperature_limit_celsius", &temp_limit);
+        "stallwatch_drive_temperature_limit_celsius",
+        &temp_limit,
+    );
     out
 }
 
@@ -351,7 +375,10 @@ mod tests {
             .find_map(|l| l.strip_prefix("stallwatch_series_emitted ")?.parse().ok())
             .expect("emitted gauge");
         assert!(emitted <= 2, "cap not enforced: {emitted}");
-        assert!(doc.contains("stallwatch_series_dropped "), "must report drops");
+        assert!(
+            doc.contains("stallwatch_series_dropped "),
+            "must report drops"
+        );
     }
 
     #[test]

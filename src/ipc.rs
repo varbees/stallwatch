@@ -32,9 +32,10 @@ use std::path::PathBuf;
 /// without an XDG runtime dir.
 pub fn socket_path() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR")
-        && !dir.is_empty() {
-            return PathBuf::from(dir).join("stallwatch.sock");
-        }
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir).join("stallwatch.sock");
+    }
     PathBuf::from(format!("/tmp/stallwatch-{}.sock", unsafe { libc_getuid() }))
 }
 
@@ -122,14 +123,26 @@ mod tests {
         assert_eq!(Request::parse("PING"), Some(Request::Ping));
         assert_eq!(Request::parse("ping\n"), Some(Request::Ping));
         assert_eq!(Request::parse("  Now  "), Some(Request::Now(Format::Json)));
-        assert_eq!(Request::parse("SINCE 30"), Some(Request::Since(30, Format::Json)));
+        assert_eq!(
+            Request::parse("SINCE 30"),
+            Some(Request::Since(30, Format::Json))
+        );
     }
 
     #[test]
     fn format_token_is_optional_and_defaults_to_json() {
-        assert_eq!(Request::parse("SINCE 30 text"), Some(Request::Since(30, Format::Text)));
-        assert_eq!(Request::parse("SINCE 30 TEXT"), Some(Request::Since(30, Format::Text)));
-        assert_eq!(Request::parse("SINCE 30 bogus"), Some(Request::Since(30, Format::Json)));
+        assert_eq!(
+            Request::parse("SINCE 30 text"),
+            Some(Request::Since(30, Format::Text))
+        );
+        assert_eq!(
+            Request::parse("SINCE 30 TEXT"),
+            Some(Request::Since(30, Format::Text))
+        );
+        assert_eq!(
+            Request::parse("SINCE 30 bogus"),
+            Some(Request::Since(30, Format::Json))
+        );
         assert_eq!(Request::parse("NOW text"), Some(Request::Now(Format::Text)));
     }
 

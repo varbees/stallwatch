@@ -9,11 +9,11 @@
 
 use crate::cgroup;
 use crate::psi::Resource;
-use crate::{Stall, MAX_STALLS, MIN_REPORTABLE_PCT};
+use crate::psi::Snapshot;
+use crate::{MAX_STALLS, MIN_REPORTABLE_PCT, Stall};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use crate::psi::Snapshot;
 
 /// Share of a parent's stall a single child must own before the parent stops
 /// being considered responsible.
@@ -130,7 +130,9 @@ pub fn collect(window: Duration) -> (Vec<Stall>, u64) {
             // Absent from the first sample means the cgroup appeared mid-window;
             // its counter starts from an unknown base, so skip it entirely
             // rather than report a fabricated delta.
-            let Some(before) = first.get(cg) else { continue };
+            let Some(before) = first.get(cg) else {
+                continue;
+            };
             let b = before.get(res).total_for(kind);
             let a = after.get(res).total_for(kind);
             // Saturating: counters restart when a cgroup is destroyed and its
@@ -180,7 +182,11 @@ mod tests {
             ("/sys/fs/cgroup/user.slice", 1000),
             ("/sys/fs/cgroup/user.slice/app.slice", 900),
         ]);
-        assert!(!is_responsible_naive(Path::new("/sys/fs/cgroup/user.slice"), 1000, &d));
+        assert!(!is_responsible_naive(
+            Path::new("/sys/fs/cgroup/user.slice"),
+            1000,
+            &d
+        ));
         assert!(is_responsible_naive(
             Path::new("/sys/fs/cgroup/user.slice/app.slice"),
             900,
@@ -201,7 +207,11 @@ mod tests {
             ("/sys/fs/cgroup/user.slice/a.scope", 500),
             ("/sys/fs/cgroup/user.slice/b.scope", 500),
         ]);
-        assert!(is_responsible_naive(Path::new("/sys/fs/cgroup/user.slice"), 1000, &d));
+        assert!(is_responsible_naive(
+            Path::new("/sys/fs/cgroup/user.slice"),
+            1000,
+            &d
+        ));
     }
 
     #[test]
@@ -230,7 +240,6 @@ mod tests {
         assert!(is_responsible_naive(Path::new("/p"), 1000, &d));
     }
 }
-
 
 /// Continuous sampler that retains the previous snapshot.
 ///
@@ -274,10 +283,9 @@ impl Sampler {
     /// duty-cycle budget and reports the interval it chose.
     pub fn recommended_interval(&self, duty: f64, floor: Duration, ceil: Duration) -> Duration {
         let sweep = self.last_sweep.as_secs_f64().max(0.000_1);
-        Duration::from_secs_f64((sweep / duty.clamp(0.001, 1.0)).clamp(
-            floor.as_secs_f64(),
-            ceil.as_secs_f64(),
-        ))
+        Duration::from_secs_f64(
+            (sweep / duty.clamp(0.001, 1.0)).clamp(floor.as_secs_f64(), ceil.as_secs_f64()),
+        )
     }
 
     /// One sweep, diffed against the previous one.
@@ -324,7 +332,9 @@ fn diff(
             // Absent from the first sample means the cgroup appeared mid-window;
             // its counter starts from an unknown base, so skip it rather than
             // report a fabricated delta.
-            let Some(before) = first.get(cg) else { continue };
+            let Some(before) = first.get(cg) else {
+                continue;
+            };
             let b = before.get(res).total_for(kind);
             let a = after.get(res).total_for(kind);
             // Saturating: counters restart when a cgroup is destroyed and its
@@ -386,8 +396,14 @@ mod responsibility_tests {
             ("/sys/fs/cgroup/user.slice", 900),
             ("/sys/fs/cgroup/user.slice/user-1000.slice", 880),
             ("/sys/fs/cgroup/user.slice/user-1000.slice/app.slice", 870),
-            ("/sys/fs/cgroup/user.slice/user-1000.slice/app.slice/a.scope", 800),
-            ("/sys/fs/cgroup/user.slice/user-1000.slice/app.slice/b.scope", 40),
+            (
+                "/sys/fs/cgroup/user.slice/user-1000.slice/app.slice/a.scope",
+                800,
+            ),
+            (
+                "/sys/fs/cgroup/user.slice/user-1000.slice/app.slice/b.scope",
+                40,
+            ),
             ("/sys/fs/cgroup/system.slice", 100),
             ("/sys/fs/cgroup/system.slice/x.service", 10),
         ]));
@@ -395,11 +411,7 @@ mod responsibility_tests {
 
     #[test]
     fn agrees_when_children_are_diffuse() {
-        assert_agrees(&m(&[
-            ("/p", 1000),
-            ("/p/a", 500),
-            ("/p/b", 500),
-        ]));
+        assert_agrees(&m(&[("/p", 1000), ("/p/a", 500), ("/p/b", 500)]));
     }
 
     #[test]
@@ -430,8 +442,11 @@ mod responsibility_tests {
         let mut d = HashMap::new();
         for i in 0..5000u64 {
             d.insert(
-                PathBuf::from(format!("/sys/fs/cgroup/system.slice/svc{}.service", i % 250))
-                    .join(format!("task{i}.scope")),
+                PathBuf::from(format!(
+                    "/sys/fs/cgroup/system.slice/svc{}.service",
+                    i % 250
+                ))
+                .join(format!("task{i}.scope")),
                 i % 977,
             );
         }
@@ -465,7 +480,10 @@ mod sampler_tests {
         let mut s = Sampler::new();
         s.tick();
         assert!(s.last_sweep() > Duration::ZERO);
-        assert!(s.last_sweep() < Duration::from_secs(5), "sweep pathologically slow");
+        assert!(
+            s.last_sweep() < Duration::from_secs(5),
+            "sweep pathologically slow"
+        );
     }
 
     #[test]

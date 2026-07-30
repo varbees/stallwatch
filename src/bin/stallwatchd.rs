@@ -13,10 +13,10 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use stallwatch::ipc::{socket_path, varlink_socket_path, Format, Request};
-use stallwatch::varlink::{self, Call, CallError};
 use stallwatch::attribution::Sampler;
+use stallwatch::ipc::{Format, Request, socket_path, varlink_socket_path};
 use stallwatch::ring::{Frame, Ring};
+use stallwatch::varlink::{self, Call, CallError};
 
 const USAGE: &str = "\
 stallwatchd — resident stall recorder
@@ -67,7 +67,10 @@ fn main() {
             .and_then(|i| args.get(i + 1))
             .cloned()
     };
-    let max_series = flag("--max-series", stallwatch::metrics::DEFAULT_MAX_SERIES as u64) as usize;
+    let max_series = flag(
+        "--max-series",
+        stallwatch::metrics::DEFAULT_MAX_SERIES as u64,
+    ) as usize;
     let metrics_listen = strflag("--metrics-listen");
     let metrics_textfile = strflag("--metrics-textfile");
     let tick_ms = flag("--tick", 1000).max(100);
@@ -148,9 +151,7 @@ fn main() {
                 // Say so when pacing diverges from what was asked for. Silently
                 // sampling at a third of the requested rate would make every
                 // number quietly wrong.
-                if interval > floor
-                    && interval.abs_diff(announced) > Duration::from_millis(500)
-                {
+                if interval > floor && interval.abs_diff(announced) > Duration::from_millis(500) {
                     eprintln!(
                         "stallwatchd: sweep costs {:.0}ms; pacing to {:.1}s to stay under {:.0}% of a core",
                         sampler.last_sweep().as_secs_f64() * 1000.0,
@@ -192,11 +193,13 @@ fn main() {
 
     if let Some(path) = metrics_textfile {
         eprintln!("stallwatchd: writing textfile metrics to {path}");
-        std::thread::spawn(move || loop {
-            if let Err(e) = write_textfile(&path, max_series) {
-                eprintln!("stallwatchd: textfile write failed: {e}");
+        std::thread::spawn(move || {
+            loop {
+                if let Err(e) = write_textfile(&path, max_series) {
+                    eprintln!("stallwatchd: textfile write failed: {e}");
+                }
+                std::thread::sleep(Duration::from_secs(15));
             }
-            std::thread::sleep(Duration::from_secs(15));
         });
     }
 
@@ -320,7 +323,10 @@ fn handle_varlink(stream: UnixStream, ring: Arc<Mutex<Ring>>) {
             frame.pop();
         }
         let Ok(text) = String::from_utf8(frame) else {
-            let _ = write_frame(&mut out, &varlink::error_for(&CallError::Malformed("not UTF-8")));
+            let _ = write_frame(
+                &mut out,
+                &varlink::error_for(&CallError::Malformed("not UTF-8")),
+            );
             return;
         };
         if text.trim().is_empty() {
@@ -420,8 +426,16 @@ fn serve_metrics(mut stream: TcpStream, max_series: usize) {
             "text/html; charset=utf-8",
             "<html><body><a href=\"/metrics\">metrics</a></body></html>\n".to_string(),
         ),
-        ("GET", _) => ("404 Not Found", "text/plain; charset=utf-8", "not found\n".to_string()),
-        _ => ("405 Method Not Allowed", "text/plain; charset=utf-8", "method not allowed\n".to_string()),
+        ("GET", _) => (
+            "404 Not Found",
+            "text/plain; charset=utf-8",
+            "not found\n".to_string(),
+        ),
+        _ => (
+            "405 Method Not Allowed",
+            "text/plain; charset=utf-8",
+            "method not allowed\n".to_string(),
+        ),
     };
 
     let _ = write!(

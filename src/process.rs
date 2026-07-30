@@ -177,9 +177,7 @@ pub fn drill(cgroup: &Path, window: Duration, samples: u32) -> Vec<ProcCulprit> 
         .enumerate()
         .filter_map(|(i, &pid)| {
             let (rb, wb) = match (before[i], io_bytes(pid)) {
-                (Some((r0, w0)), Some((r1, w1))) => {
-                    (r1.saturating_sub(r0), w1.saturating_sub(w0))
-                }
+                (Some((r0, w0)), Some((r1, w1))) => (r1.saturating_sub(r0), w1.saturating_sub(w0)),
                 _ => (0, 0),
             };
             // Nothing observed: no blocking, no bytes. Not a culprit.
@@ -294,12 +292,14 @@ mod tests {
 
     #[test]
     fn drill_on_a_nonexistent_cgroup_is_empty_not_a_panic() {
-        assert!(drill(
-            Path::new("/sys/fs/cgroup/definitely-not-here"),
-            Duration::from_millis(10),
-            2
-        )
-        .is_empty());
+        assert!(
+            drill(
+                Path::new("/sys/fs/cgroup/definitely-not-here"),
+                Duration::from_millis(10),
+                2
+            )
+            .is_empty()
+        );
     }
 
     #[test]

@@ -61,7 +61,10 @@ fn check_discard(base: &Path, label: &str) -> Option<Warning> {
     let bytes = read_u64(&base.join("discard/discardable_bytes")).unwrap_or(0);
     let iops = read_u64(&base.join("discard/iops_limit")).unwrap_or(0);
     let eta = if iops > 0 {
-        format!(" At the {iops} IOPS limit that is roughly {} min.", extents / iops / 60 + 1)
+        format!(
+            " At the {iops} IOPS limit that is roughly {} min.",
+            extents / iops / 60 + 1
+        )
     } else {
         String::new()
     };

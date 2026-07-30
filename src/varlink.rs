@@ -28,8 +28,8 @@
 //! `org.varlink.service.GetInfo` and `.GetInterfaceDescription` are mandatory
 //! for any conforming service — that is what makes introspection work.
 
-use crate::json::{self, Json};
 use crate::Report;
+use crate::json::{self, Json};
 
 pub const INTERFACE: &str = "dev.stallwatch.Monitor";
 
@@ -236,8 +236,10 @@ mod tests {
             Call::GetStalls { window_ms: 60_000 }
         );
         assert_eq!(
-            parse_call(r#"{"method":"dev.stallwatch.Monitor.GetStalls","parameters":{"window_ms":1}}"#)
-                .unwrap(),
+            parse_call(
+                r#"{"method":"dev.stallwatch.Monitor.GetStalls","parameters":{"window_ms":1}}"#
+            )
+            .unwrap(),
             Call::GetStalls { window_ms: 100 }
         );
     }
@@ -249,8 +251,10 @@ mod tests {
             Err(CallError::Malformed(_))
         ));
         assert_eq!(
-            parse_call(r#"{"method":"dev.stallwatch.Monitor.GetHistory","parameters":{"seconds":30}}"#)
-                .unwrap(),
+            parse_call(
+                r#"{"method":"dev.stallwatch.Monitor.GetHistory","parameters":{"seconds":30}}"#
+            )
+            .unwrap(),
             Call::GetHistory { seconds: 30 }
         );
     }
@@ -277,8 +281,14 @@ mod tests {
     #[test]
     fn errors_are_wellformed_varlink() {
         let e = error_for(&CallError::UnknownMethod("x.Y".into()));
-        assert!(e.contains(r#""error":"org.varlink.service.MethodNotFound""#), "{e}");
-        assert!(json::parse(&e).is_ok(), "error reply must be valid JSON: {e}");
+        assert!(
+            e.contains(r#""error":"org.varlink.service.MethodNotFound""#),
+            "{e}"
+        );
+        assert!(
+            json::parse(&e).is_ok(),
+            "error reply must be valid JSON: {e}"
+        );
     }
 
     #[test]
@@ -294,7 +304,10 @@ mod tests {
             .and_then(|p| p.get("description"))
             .and_then(Json::as_str)
             .unwrap();
-        assert!(text.starts_with("interface dev.stallwatch.Monitor"), "{text}");
+        assert!(
+            text.starts_with("interface dev.stallwatch.Monitor"),
+            "{text}"
+        );
         assert!(text.contains("method GetStalls"));
     }
 }

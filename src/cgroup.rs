@@ -65,12 +65,15 @@ pub fn unescape_systemd(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 3 < bytes.len() && bytes[i + 1] == b'x'
-            && let Ok(b) = u8::from_str_radix(&name[i + 2..i + 4], 16) {
-                out.push(b as char);
-                i += 4;
-                continue;
-            }
+        if bytes[i] == b'\\'
+            && i + 3 < bytes.len()
+            && bytes[i + 1] == b'x'
+            && let Ok(b) = u8::from_str_radix(&name[i + 2..i + 4], 16)
+        {
+            out.push(b as char);
+            i += 4;
+            continue;
+        }
         out.push(bytes[i] as char);
         i += 1;
     }
@@ -191,10 +194,7 @@ mod tests {
             friendly_name(Path::new("/a/system.slice")),
             "all system services"
         );
-        assert_eq!(
-            friendly_name(Path::new("/a/weird.slice")),
-            "weird (group)"
-        );
+        assert_eq!(friendly_name(Path::new("/a/weird.slice")), "weird (group)");
     }
 
     #[test]

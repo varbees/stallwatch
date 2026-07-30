@@ -225,14 +225,17 @@ mod tests {
 
     #[test]
     fn parses_a_varlink_request() {
-        let j = parse(r#"{"method":"dev.stallwatch.Monitor.GetStalls","parameters":{"seconds":30}}"#)
-            .unwrap();
+        let j =
+            parse(r#"{"method":"dev.stallwatch.Monitor.GetStalls","parameters":{"seconds":30}}"#)
+                .unwrap();
         assert_eq!(
             j.get("method").and_then(Json::as_str),
             Some("dev.stallwatch.Monitor.GetStalls")
         );
         assert_eq!(
-            j.get("parameters").and_then(|p| p.get("seconds")).and_then(Json::as_u64),
+            j.get("parameters")
+                .and_then(|p| p.get("seconds"))
+                .and_then(Json::as_u64),
             Some(30)
         );
     }
@@ -255,8 +258,17 @@ mod tests {
     #[test]
     fn rejects_malformed_input_rather_than_guessing() {
         for bad in [
-            "", "{", "}", "[", r#"{"a"}"#, r#"{"a":}"#, r#"{a:1}"#,
-            r#""unterminated"#, "tru", r#"{} extra"#, r#"{"a":1,}"#,
+            "",
+            "{",
+            "}",
+            "[",
+            r#"{"a"}"#,
+            r#"{"a":}"#,
+            r#"{a:1}"#,
+            r#""unterminated"#,
+            "tru",
+            r#"{} extra"#,
+            r#"{"a":1,}"#,
         ] {
             assert!(parse(bad).is_err(), "should reject: {bad:?}");
         }
