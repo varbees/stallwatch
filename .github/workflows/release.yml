@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  verify-tag:
+    name: tag matches Cargo.toml version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: compare
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"(.*)"/\1/')"
+          echo "tag=$TAG pkg=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag v$TAG does not match Cargo.toml version $PKG"
+            exit 1
+          fi
+
+  test:
+    name: test
+    needs: verify-tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all-targets
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: verify-tag
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-musl, x86_64-unknown-linux-gnu]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - run: cargo build --release --target ${{ matrix.target }}
+
+      - name: package
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          DIR="stallwatch-${VERSION}-${{ matrix.target }}"
+          mkdir "$DIR"
+          cp target/${{ matrix.target }}/release/stallwatch "$DIR/"
+          cp target/${{ matrix.target }}/release/stallwatchd "$DIR/"
+          cp README.md LICENSE-MIT LICENSE-APACHE "$DIR/"
+          cp -r systemd "$DIR/"
+          tar czf "$DIR.tar.gz" "$DIR"
+          sha256sum "$DIR.tar.gz" > "$DIR.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.target }}
+          path: |
+            stallwatch-*.tar.gz
+            stallwatch-*.tar.gz.sha256
+
+  github-release:
+    name: publish GitHub release
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: build-*
+          merge-multiple: true
+
+      - name: combined checksums
+        run: cat *.sha256 > SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            stallwatch-*.tar.gz
+            SHA256SUMS
+          generate_release_notes: true
+
+  publish-crates-io:
+    name: publish to crates.io
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: check for registry token
+        id: check
+        run: |
+          if [ -n "${{ secrets.CARGO_REGISTRY_TOKEN }}" ]; then
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::CARGO_REGISTRY_TOKEN is not set — skipping crates.io publish. Add it with: gh secret set CARGO_REGISTRY_TOKEN --repo varbees/stallwatch"
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.check.outputs.has_token == 'true'
+
+      - name: cargo publish
+        if: steps.check.outputs.has_token == 'true'
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

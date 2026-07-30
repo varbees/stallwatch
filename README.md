@@ -1,5 +1,8 @@
 # stallwatch
 
+[![CI](https://github.com/varbees/stallwatch/actions/workflows/ci.yml/badge.svg)](https://github.com/varbees/stallwatch/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/stallwatch.svg)](https://crates.io/crates/stallwatch)
+
 **Your Linux desktop freezes. `htop` says the CPU is idle and you have free RAM. So what stopped?**
 
 ![stallwatch diagnosing a real disk stall](demo/demo.gif)

@@ -4,8 +4,11 @@ version = "0.1.0"
 edition = "2024"
 description = "Name the systemd unit that is stalling your Linux system, and explain why."
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/varbees/stallwatch"
+readme = "README.md"
 categories = ["command-line-utilities", "os::linux-apis"]
 keywords = ["psi", "cgroup", "diagnostics", "performance", "linux"]
+rust-version = "1.85"
 
 # Zero dependencies is load-bearing, not an aesthetic choice: the engine must
 # stay reducible to a C ABI so C/C++ consumers (btop, ksystemstats, GNOME's
