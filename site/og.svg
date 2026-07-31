@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <!--
+    Social card. Same palette and the same signature as the page it links to:
+    a calm instrument reading flat while the pressure instrument shows the
+    machine frozen. The contradiction is the product, so it is the card.
+  -->
+  <rect width="1200" height="630" fill="#0a0c11"/>
+
+  <!-- hairline frame -->
+  <rect x="0" y="0" width="1200" height="4" fill="#ff7a45"/>
+
+  <!-- wordmark -->
+  <text x="80" y="108" font-family="monospace" font-size="30" font-weight="bold" fill="#e8edf5">
+    stall<tspan fill="#ff7a45">watch</tspan>
+  </text>
+  <text x="80" y="144" font-family="monospace" font-size="17" fill="#67748a">
+    Antharmaya Labs  ·  MIT / Apache-2.0  ·  zero dependencies
+  </text>
+
+  <!-- headline -->
+  <text x="80" y="238" font-family="monospace" font-size="52" font-weight="bold" fill="#e8edf5">
+    Your machine froze.
+  </text>
+  <text x="80" y="302" font-family="monospace" font-size="52" font-weight="bold" fill="#67748a">
+    Every monitor says it&#8217;s fine.
+  </text>
+
+  <!-- ── the two instruments, same ten seconds ─────────────────── -->
+  <g transform="translate(80,360)">
+    <rect x="0" y="0" width="1040" height="150" fill="#0f131b" stroke="#1c2330" stroke-width="1" rx="3"/>
+
+    <!-- calm reading: flat, boring, reassuring -->
+    <text x="24" y="34" font-family="monospace" font-size="15" fill="#67748a">top · htop · free</text>
+    <path d="M250 40 L340 39 L430 41 L520 38 L610 40 L700 39 L790 41 L880 39 L1016 40"
+          fill="none" stroke="#67748a" stroke-width="2" opacity="0.75"/>
+    <text x="24" y="56" font-family="monospace" font-size="14" fill="#67748a">cpu 2%</text>
+
+    <line x1="24" y1="76" x2="1016" y2="76" stroke="#1c2330" stroke-width="1"/>
+
+    <!-- pressure reading: blocked microseconds, as they actually fall -->
+    <text x="24" y="112" font-family="monospace" font-size="15" fill="#67748a">/proc/pressure</text>
+    <text x="24" y="134" font-family="monospace" font-size="14" fill="#ff7a45">io full 51%</text>
+    <g transform="translate(250,96)">
+      <rect x="0"   y="0" width="58" height="34" fill="#ff7a45" opacity="0.92"/>
+      <rect x="72"  y="0" width="30" height="34" fill="#c4441f" opacity="0.85"/>
+      <rect x="112" y="0" width="76" height="34" fill="#ff7a45" opacity="0.92"/>
+      <rect x="222" y="0" width="46" height="34" fill="#ff7a45" opacity="0.92"/>
+      <rect x="284" y="0" width="24" height="34" fill="#c4441f" opacity="0.85"/>
+      <rect x="330" y="0" width="98" height="34" fill="#ff7a45" opacity="0.92"/>
+      <rect x="452" y="0" width="38" height="34" fill="#ff7a45" opacity="0.92"/>
+      <rect x="512" y="0" width="60" height="34" fill="#c4441f" opacity="0.85"/>
+      <rect x="600" y="0" width="84" height="34" fill="#ff7a45" opacity="0.92"/>
+      <rect x="706" y="0" width="42" height="34" fill="#ff7a45" opacity="0.92"/>
+    </g>
+  </g>
+
+  <!-- what it does, in one line -->
+  <text x="80" y="562" font-family="monospace" font-size="21" fill="#c9d1dd">
+    Names the systemd unit, then the process, that stopped you.
+  </text>
+  <text x="80" y="596" font-family="monospace" font-size="17" fill="#67748a">
+    stallwatch.antharmaya.com
+  </text>
+</svg>
