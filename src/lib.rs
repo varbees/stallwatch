@@ -47,6 +47,7 @@ pub mod pathology;
 pub mod process;
 pub mod psi;
 pub mod ring;
+pub mod trigger;
 pub mod varlink;
 
 pub use pathology::{Severity, Warning};
