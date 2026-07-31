@@ -20,12 +20,12 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use stallwatch::attribution::Sampler;
-use stallwatch::ipc::{Format, Request, socket_path, varlink_socket_path};
-use stallwatch::psi::Resource;
-use stallwatch::ring::{Frame, Ring};
-use stallwatch::trigger::{Trigger, Wake};
-use stallwatch::varlink::{self, Call, CallError};
+use stallwatch_core::attribution::Sampler;
+use stallwatch_core::ipc::{Format, Request, socket_path, varlink_socket_path};
+use stallwatch_core::psi::Resource;
+use stallwatch_core::ring::{Frame, Ring};
+use stallwatch_core::trigger::{Trigger, Wake};
+use stallwatch_core::varlink::{self, Call, CallError};
 
 const USAGE: &str = "\
 stallwatchd — resident stall recorder
@@ -129,7 +129,7 @@ fn start_trigger_capture(
             // Sample across a short window while the stall is still happening.
             // The kernel rate-limits to one notification per window, so this
             // cannot spin even on a permanently stalled machine.
-            let (stalls, window_usec) = stallwatch::attribution::collect(capture_window);
+            let (stalls, window_usec) = stallwatch_core::attribution::collect(capture_window);
             if let Ok(mut r) = ring.lock() {
                 r.push(Frame {
                     at_unix: now_unix(),
@@ -163,7 +163,7 @@ fn main() {
     };
     let max_series = flag(
         "--max-series",
-        stallwatch::metrics::DEFAULT_MAX_SERIES as u64,
+        stallwatch_core::metrics::DEFAULT_MAX_SERIES as u64,
     ) as usize;
     let metrics_listen = strflag("--metrics-listen");
     let metrics_textfile = strflag("--metrics-textfile");
@@ -174,7 +174,7 @@ fn main() {
     let duty = (flag("--duty", 2) as f64 / 100.0).clamp(0.001, 0.5);
     let history_secs = flag("--history", 300).max(10);
 
-    if !stallwatch::psi_available() {
+    if !stallwatch_core::psi_available() {
         eprintln!("stallwatchd: no PSI on this kernel (/proc/pressure missing); refusing to start");
         std::process::exit(1);
     }
@@ -328,12 +328,12 @@ fn handle(stream: UnixStream, ring: Arc<Mutex<Ring>>) {
         Some(Request::Now(fmt)) => {
             let guard = ring.lock();
             let report = match guard.as_ref().ok().and_then(|r| r.newest()) {
-                Some(f) => stallwatch::Report {
+                Some(f) => stallwatch_core::Report {
                     window_usec: f.window_usec,
                     stalls: f.stalls.clone(),
                     warnings: Vec::new(),
                 },
-                None => stallwatch::Report::default(),
+                None => stallwatch_core::Report::default(),
             };
             render(&report, fmt)
         }
@@ -341,11 +341,11 @@ fn handle(stream: UnixStream, ring: Arc<Mutex<Ring>>) {
             let since = now_unix().saturating_sub(secs);
             let mut report = match ring.lock() {
                 Ok(r) => r.aggregate(since),
-                Err(_) => stallwatch::Report::default(),
+                Err(_) => stallwatch_core::Report::default(),
             };
             // Pathology is point-in-time state, not history — evaluate it fresh
             // on query rather than storing a stale copy in every frame.
-            report.warnings = stallwatch::pathology::scan();
+            report.warnings = stallwatch_core::pathology::scan();
             render(&report, fmt)
         }
         None => "{\"error\": \"expected PING | NOW | SINCE <secs>\"}".to_string(),
@@ -355,7 +355,7 @@ fn handle(stream: UnixStream, ring: Arc<Mutex<Ring>>) {
     let _ = out.flush();
 }
 
-fn render(r: &stallwatch::Report, fmt: Format) -> String {
+fn render(r: &stallwatch_core::Report, fmt: Format) -> String {
     match fmt {
         Format::Json => r.to_json(),
         Format::Text => r.to_text(),
@@ -439,16 +439,16 @@ fn handle_varlink(stream: UnixStream, ring: Arc<Mutex<Ring>>) {
                 }
             }
             Ok(Call::GetStalls { window_ms }) => {
-                let r = stallwatch::observe(Duration::from_millis(window_ms));
+                let r = stallwatch_core::observe(Duration::from_millis(window_ms));
                 varlink::reply_report(&r)
             }
             Ok(Call::GetHistory { seconds }) => {
                 let since = now_unix().saturating_sub(seconds);
                 let mut r = match ring.lock() {
                     Ok(g) => g.aggregate(since),
-                    Err(_) => stallwatch::Report::default(),
+                    Err(_) => stallwatch_core::Report::default(),
                 };
-                r.warnings = stallwatch::pathology::scan();
+                r.warnings = stallwatch_core::pathology::scan();
                 varlink::reply_report(&r)
             }
             Err(e) => varlink::error_for(&e),
@@ -473,7 +473,7 @@ fn write_frame(out: &mut UnixStream, s: &str) -> std::io::Result<()> {
 /// truncated metrics rather than skipped. rename(2) within a directory is
 /// atomic, so a reader sees either the old file or the new one.
 fn write_textfile(path: &str, max_series: usize) -> std::io::Result<()> {
-    let body = stallwatch::metrics::render(max_series);
+    let body = stallwatch_core::metrics::render(max_series);
     let tmp = format!("{path}.tmp");
     std::fs::write(&tmp, body)?;
     std::fs::rename(&tmp, path)
@@ -515,7 +515,7 @@ fn serve_metrics(mut stream: TcpStream, max_series: usize) {
         ("GET", "/metrics") => (
             "200 OK",
             "text/plain; version=0.0.4; charset=utf-8",
-            stallwatch::metrics::render(max_series),
+            stallwatch_core::metrics::render(max_series),
         ),
         ("GET", "/") => (
             "200 OK",

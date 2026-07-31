@@ -8,11 +8,11 @@
 
 use std::time::{Duration, Instant};
 
-use stallwatch::psi::{PsiKind, Resource};
-use stallwatch::trigger::{Trigger, Wake};
+use stallwatch_core::psi::{PsiKind, Resource};
+use stallwatch_core::trigger::{Trigger, Wake};
 
 fn main() {
-    if !stallwatch::psi_available() {
+    if !stallwatch_core::psi_available() {
         eprintln!("no /proc/pressure on this kernel");
         return;
     }

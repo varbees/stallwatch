@@ -34,7 +34,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all-targets
+      - run: cargo test --workspace --all-targets
 
   build:
     name: build (${{ matrix.target }})
@@ -60,7 +60,7 @@ jobs:
       # No C is linked into this binary, so aarch64 needs no cross toolchain —
       # rust-lld links the static musl target directly. Verified producing a
       # "statically linked, stripped" ARM aarch64 ELF.
-      - run: cargo build --release --target ${{ matrix.target }}
+      - run: cargo build --workspace --release --target ${{ matrix.target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
 
@@ -126,6 +126,10 @@ jobs:
 
       - name: cargo publish
         if: steps.check.outputs.has_token == 'true'
-        run: cargo publish --locked
+        run: |
+          # core first; the CLI depends on it by version and cannot resolve
+          # until core is live on the index.
+          cargo publish -p stallwatch-core --locked
+          cargo publish -p stallwatch --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

@@ -30,7 +30,7 @@
 //!
 //! ```no_run
 //! use std::time::Duration;
-//! let report = stallwatch::observe(Duration::from_secs(1));
+//! let report = stallwatch_core::observe(Duration::from_secs(1));
 //! for stall in &report.stalls {
 //!     println!("{} stalled {}ms on {}", stall.unit, stall.delta_usec / 1000, stall.resource);
 //! }

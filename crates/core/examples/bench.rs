@@ -1,5 +1,5 @@
 //! Measure attribution scaling for real instead of projecting it.
-use stallwatch::attribution::Responsibility;
+use stallwatch_core::attribution::Responsibility;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;

@@ -1,0 +1,19 @@
+[package]
+name = "stallwatch-core"
+description = "Attribute Linux stalls to the systemd unit and process responsible, from Pressure Stall Information."
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+# Never add anything here. Zero dependencies is what keeps this reducible to a
+# C ABI, and a C or C++ project will not accept a Rust crate graph in its build.
+[dependencies]
+
+[lib]
+name = "stallwatch_core"
+path = "src/lib.rs"

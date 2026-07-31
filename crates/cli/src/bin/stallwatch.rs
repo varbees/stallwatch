@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-use stallwatch::ipc::socket_path;
+use stallwatch_core::ipc::socket_path;
 
 const USAGE: &str = "\
 stallwatch — name the unit that is stalling your Linux system
@@ -64,7 +64,7 @@ fn main() {
         return;
     }
 
-    if !stallwatch::psi_available() {
+    if !stallwatch_core::psi_available() {
         eprintln!(
             "stallwatch: this kernel exposes no PSI (/proc/pressure is missing).\n\
              Needs CONFIG_PSI=y. If the kernel was built with \
@@ -77,7 +77,7 @@ fn main() {
     let processes = args.iter().any(|a| a == "--processes");
 
     loop {
-        let report = stallwatch::observe(Duration::from_millis(window_ms));
+        let report = stallwatch_core::observe(Duration::from_millis(window_ms));
 
         if watch && !json {
             // Clear screen, home cursor.
@@ -140,13 +140,13 @@ fn query_daemon(secs: u64, json: bool) -> std::io::Result<String> {
 ///
 /// A process with high bytes and low blocking is causing the stall; high
 /// blocking with low bytes is suffering it.
-fn drill_top(report: &stallwatch::Report, window_ms: u64) -> String {
+fn drill_top(report: &stallwatch_core::Report, window_ms: u64) -> String {
     use std::collections::HashSet;
     use std::path::Path;
 
     // Split the budget across the cgroups we probe so the flag costs roughly
     // one extra window regardless of how many we look at.
-    let targets: Vec<&stallwatch::Stall> = {
+    let targets: Vec<&stallwatch_core::Stall> = {
         let mut seen = HashSet::new();
         report
             .stalls
@@ -163,7 +163,7 @@ fn drill_top(report: &stallwatch::Report, window_ms: u64) -> String {
     let mut o = String::new();
     let mut found_any = false;
     for t in &targets {
-        let culprits = stallwatch::process::drill(Path::new(&t.cgroup), each, 12);
+        let culprits = stallwatch_core::process::drill(Path::new(&t.cgroup), each, 12);
         if culprits.is_empty() {
             continue;
         }
@@ -204,7 +204,7 @@ fn drill_top(report: &stallwatch::Report, window_ms: u64) -> String {
              \x20  transient warning above)\n"
             .to_string();
     }
-    if !stallwatch::process::delayacct_enabled() {
+    if !stallwatch_core::process::delayacct_enabled() {
         o.push_str(
             "    (exact blocking time needs delay accounting: \
              sudo sysctl -w kernel.task_delayacct=1)\n",
