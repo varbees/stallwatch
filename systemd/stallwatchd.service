@@ -33,5 +33,10 @@ RestrictRealtime=true
 # %t expands to $XDG_RUNTIME_DIR for user units.
 ReadWritePaths=%t
 
+# Creates and grants write access to ~/.local/state/stallwatch and exports it
+# as $STATE_DIRECTORY. Without this, ProtectHome=read-only silently prevents
+# the incident log from ever being written, and `stallwatch why` finds nothing.
+StateDirectory=stallwatch
+
 [Install]
 WantedBy=default.target

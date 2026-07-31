@@ -21,6 +21,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use stallwatch_core::attribution::Sampler;
+use stallwatch_core::incident::{Culprit, Incident};
+use stallwatch_core::ipc::incident_log_path;
 use stallwatch_core::ipc::{Format, Request, socket_path, varlink_socket_path};
 use stallwatch_core::psi::Resource;
 use stallwatch_core::ring::{Frame, Ring};
@@ -53,6 +55,37 @@ Serves two sockets in $XDG_RUNTIME_DIR:
     varlinkctl call $XDG_RUNTIME_DIR/stallwatch.varlink \\
         dev.stallwatch.Monitor.GetHistory '{\"seconds\":30}'
 ";
+
+/// Append one incident to the log.
+///
+/// Best-effort by design: a diagnostic that dies because it could not write a
+/// log file is worse than one that quietly keeps watching. Failures are
+/// reported once rather than on every capture.
+fn append_incident(incident: &Incident) {
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static COMPLAINED: AtomicBool = AtomicBool::new(false);
+
+    let path = incident_log_path();
+    let write = || -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        writeln!(f, "{}", incident.to_jsonl())
+    };
+    if let Err(e) = write()
+        && !COMPLAINED.swap(true, Ordering::Relaxed)
+    {
+        eprintln!(
+            "stallwatchd: cannot write {}: {e} (still watching; `stallwatch why` will find nothing)",
+            path.display()
+        );
+    }
+}
 
 fn now_unix() -> u64 {
     SystemTime::now()
@@ -130,9 +163,57 @@ fn start_trigger_capture(
             // The kernel rate-limits to one notification per window, so this
             // cannot spin even on a permanently stalled machine.
             let (stalls, window_usec) = stallwatch_core::attribution::collect(capture_window);
+
+            // Drill while the stall is still live. This is the only moment the
+            // responsible process can be caught; by the time anyone asks, it
+            // has exited.
+            //
+            // Probe the top few cgroups, not just the worst. PSI measures who
+            // is BLOCKED, so the worst-hit cgroup is the casualty; the process
+            // saturating the queue sits in a sibling showing far less pressure.
+            // Drilling only stalls.first() reliably finds the victim and never
+            // the cause, which is the exact mistake this tool exists to stop
+            // other people making.
+            // One sweep of the root cgroup, whose subtree is every process on
+            // the machine. Root subsumes the individual stalling cgroups, so
+            // drilling those as well only splits the time budget.
+            //
+            // The window matters more than the breadth. During a severe stall
+            // even the process causing it is blocked and moving nothing, so a
+            // short sample catches it looking like a bystander; measured at
+            // 120ms a dd writing 3 GiB was repeatedly recorded at 0 bytes and
+            // 16% blocked. A longer sweep sees the throughput that identifies
+            // it as the cause.
+            let mut culprits: Vec<Culprit> = stallwatch_core::process::drill(
+                std::path::Path::new(stallwatch_core::cgroup::ROOT),
+                Duration::from_millis(500),
+                10,
+            )
+            .iter()
+            .map(Culprit::from_proc)
+            .collect();
+
+            // A named cause is the whole point, so rank it first.
+            culprits.sort_by_key(|c| match c.role {
+                stallwatch_core::incident::Role::Cause => 0,
+                stallwatch_core::incident::Role::Active => 1,
+                stallwatch_core::incident::Role::Victim => 2,
+            });
+            culprits.truncate(6);
+
+            let incident = Incident {
+                at_unix: now_unix(),
+                window_usec,
+                woke_on: woke_on.iter().map(ToString::to_string).collect(),
+                stalls: stalls.clone(),
+                warnings: stallwatch_core::pathology::scan(),
+                culprits,
+            };
+            append_incident(&incident);
+
             if let Ok(mut r) = ring.lock() {
                 r.push(Frame {
-                    at_unix: now_unix(),
+                    at_unix: incident.at_unix,
                     window_usec,
                     stalls,
                 });

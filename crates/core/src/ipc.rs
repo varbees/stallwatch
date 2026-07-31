@@ -39,6 +39,35 @@ pub fn socket_path() -> PathBuf {
     PathBuf::from(format!("/tmp/stallwatch-{}.sock", unsafe { libc_getuid() }))
 }
 
+/// Where recorded incidents accumulate, honouring `XDG_STATE_HOME`.
+///
+/// State, not cache and not runtime: an incident log is meant to outlive a
+/// reboot, because "what happened yesterday" is a question people ask. The
+/// XDG spec puts exactly this kind of data in `~/.local/state`.
+pub fn incident_log_path() -> PathBuf {
+    // Under systemd, StateDirectory= sets this and guarantees it is writable
+    // even with ProtectHome=read-only. Honouring it is what lets the unit stay
+    // sandboxed instead of poking a hole in it for the home directory.
+    if let Ok(dir) = std::env::var("STATE_DIRECTORY")
+        && !dir.is_empty()
+    {
+        // systemd may pass a colon-separated list; the first is ours.
+        let first = dir.split(':').next().unwrap_or(&dir);
+        return PathBuf::from(first).join("incidents.jsonl");
+    }
+    let base = std::env::var("XDG_STATE_HOME")
+        .ok()
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".local/state"))
+        })
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    base.join("stallwatch").join("incidents.jsonl")
+}
+
 /// `getuid(2)` without linking libc.
 ///
 /// The engine has no dependencies, and pulling in the `libc` crate for one

@@ -27,6 +27,10 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
+/// How many processes a drill reports. Small, because this is evidence for a
+/// human to read, not a census.
+const MAX_CULPRITS: usize = 6;
+
 /// A process inside a stalling cgroup, with evidence.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProcCulprit {
@@ -150,9 +154,21 @@ pub fn drill(cgroup: &Path, window: Duration, samples: u32) -> Vec<ProcCulprit> 
     let mut ticks_before = vec![0u64; pids.len()];
     let mut ticks_after = vec![0u64; pids.len()];
 
+    // Track the most recent successful IO reading per process.
+    //
+    // Reading only at the end loses everything a process did if it exits
+    // during the window — and a process that finishes a burst and exits is
+    // exactly the shape of the thing that caused the stall. Measured: a dd
+    // writing 3 GiB was recorded as moving 0 bytes because it had exited by
+    // the closing read, which then classified the culprit as a bystander.
+    let mut last_io: Vec<Option<(u64, u64)>> = before.clone();
+
     let gap = window / samples.max(1);
     for round in 0..samples {
         for (i, pid) in pids.iter().enumerate() {
+            if let Some(now) = io_bytes(*pid) {
+                last_io[i] = Some(now);
+            }
             let Ok(body) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
                 continue; // exited mid-window; simply stops contributing samples
             };
@@ -172,11 +188,13 @@ pub fn drill(cgroup: &Path, window: Duration, samples: u32) -> Vec<ProcCulprit> 
     }
 
     let delayacct = delayacct_enabled();
-    let mut out: Vec<ProcCulprit> = pids
+    let out: Vec<ProcCulprit> = pids
         .iter()
         .enumerate()
         .filter_map(|(i, &pid)| {
-            let (rb, wb) = match (before[i], io_bytes(pid)) {
+            // Prefer a live reading, else the last one seen before it exited.
+            let end = io_bytes(pid).or(last_io[i]);
+            let (rb, wb) = match (before[i], end) {
                 (Some((r0, w0)), Some((r1, w1))) => (r1.saturating_sub(r0), w1.saturating_sub(w0)),
                 _ => (0, 0),
             };
@@ -202,15 +220,54 @@ pub fn drill(cgroup: &Path, window: Duration, samples: u32) -> Vec<ProcCulprit> 
         })
         .collect();
 
-    // Blocking first — that is what a stall *is*. Bytes break ties, since a
-    // process can cause IO without waiting on it.
-    out.sort_by(|a, b| {
-        b.blocked_samples
-            .cmp(&a.blocked_samples)
-            .then((b.read_bytes + b.write_bytes).cmp(&(a.read_bytes + a.write_bytes)))
-    });
-    out.truncate(5);
-    out
+    rank(out)
+}
+
+/// Choose which processes to report.
+///
+/// Extracted so the choice can be tested without a live kernel, because the
+/// failure it guards against is silent: a ranking that looks reasonable and
+/// quietly discards the only process that mattered.
+fn rank(out: Vec<ProcCulprit>) -> Vec<ProcCulprit> {
+    // Keep the worst blocked AND the biggest movers, because they are almost
+    // never the same process.
+    //
+    // Ranking by blocked time alone and then truncating silently discards the
+    // culprit every time: a process saturating the queue is not itself blocked,
+    // so it sorts last and falls off the end. That defeats the entire purpose
+    // of drilling — the caller is left with a list of casualties and no cause.
+    // Measured on a real dd: it wrote 2 GiB and never appeared in the top five.
+    let by_blocked = {
+        let mut v: Vec<usize> = (0..out.len()).collect();
+        v.sort_by_key(|&i| std::cmp::Reverse(out[i].blocked_samples));
+        v
+    };
+    let by_bytes = {
+        let mut v: Vec<usize> = (0..out.len()).collect();
+        v.sort_by_key(|&i| std::cmp::Reverse(out[i].read_bytes + out[i].write_bytes));
+        v
+    };
+
+    let mut keep: Vec<usize> = Vec::new();
+    // Interleave so neither list starves the other under a tight cap.
+    for rank in 0..out.len() {
+        for src in [&by_blocked, &by_bytes] {
+            if let Some(&i) = src.get(rank)
+                && !keep.contains(&i)
+            {
+                keep.push(i);
+            }
+        }
+        if keep.len() >= MAX_CULPRITS {
+            break;
+        }
+    }
+    keep.truncate(MAX_CULPRITS);
+
+    let mut picked: Vec<ProcCulprit> = keep.into_iter().map(|i| out[i].clone()).collect();
+    // Present bytes-first: the caller is looking for whodunnit.
+    picked.sort_by_key(|c| std::cmp::Reverse(c.read_bytes + c.write_bytes));
+    picked
 }
 
 #[cfg(test)]
@@ -236,6 +293,48 @@ mod tests {
         f[0] = "R".into();
         let body = format!("99 (Web Content (x)) {}", f.join(" "));
         assert_eq!(parse_stat(&body), Some(('R', 42)));
+    }
+
+    /// The bug this guards: ranking by blocked time then truncating drops the
+    /// culprit every time, because a process saturating the queue is not itself
+    /// blocked. Observed live — a dd wrote 2 GiB and never made the top five.
+    #[test]
+    fn the_biggest_mover_survives_truncation_alongside_the_worst_blocked() {
+        // Eight processes blocked hard and moving nothing, plus one writing a
+        // lot while barely blocked. The writer must not be dropped.
+        let mut all: Vec<ProcCulprit> = (0..8)
+            .map(|i| ProcCulprit {
+                pid: 100 + i,
+                comm: format!("victim{i}"),
+                blocked_samples: 12,
+                total_samples: 12,
+                read_bytes: 0,
+                write_bytes: 0,
+                blkio_delay_ms: None,
+            })
+            .collect();
+        all.push(ProcCulprit {
+            pid: 999,
+            comm: "dd".into(),
+            blocked_samples: 1,
+            total_samples: 12,
+            read_bytes: 0,
+            write_bytes: 5 * 1024 * 1024 * 1024,
+            blkio_delay_ms: None,
+        });
+
+        let picked = rank(all);
+
+        assert!(
+            picked.iter().any(|c| c.comm == "dd"),
+            "the cause was truncated away; picked: {:?}",
+            picked.iter().map(|c| &c.comm).collect::<Vec<_>>()
+        );
+        // And a victim must still be present, or we have merely inverted the bug.
+        assert!(
+            picked.iter().any(|c| c.comm.starts_with("victim")),
+            "victims disappeared"
+        );
     }
 
     #[test]

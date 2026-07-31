@@ -39,6 +39,23 @@ impl Json {
             _ => None,
         }
     }
+    /// A number as written, without the non-negative-integer narrowing that
+    /// [`Json::as_u64`] applies. Percentages need this.
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Json::Num(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// The elements, if this is an array.
+    pub fn as_array(&self) -> Option<&[Json]> {
+        match self {
+            Json::Arr(v) => Some(v),
+            _ => None,
+        }
+    }
+
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             Json::Bool(b) => Some(*b),

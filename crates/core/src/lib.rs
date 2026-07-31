@@ -41,6 +41,7 @@ use std::time::Duration;
 pub mod attribution;
 pub mod cgroup;
 pub mod filter;
+pub mod incident;
 pub mod ipc;
 pub mod json;
 pub mod metrics;

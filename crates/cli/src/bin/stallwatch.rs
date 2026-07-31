@@ -15,6 +15,7 @@ USAGE:
   stallwatch [--watch] [--json] [--window MS]
   stallwatch --since SECS [--json]
   stallwatch --filter EXPR
+  stallwatch why [--filter EXPR] [-n COUNT]
 
 OPTIONS:
   --window MS    sampling window in milliseconds (default 1000)
@@ -28,7 +29,12 @@ OPTIONS:
                    'resource == io and peak > 70'
                    'unit ~ firefox|chrome and delta_ms > 500'
   --fields       list every field a filter can name
+  -n COUNT       with `why`, how many incidents to show (default 1)
   -h, --help     this text
+
+COMMANDS:
+  why            what actually stopped you, in plain words, from what
+                 stallwatchd recorded while it was happening
 
 Reads /proc and /sys as the invoking user. No privileges required.
 ";
@@ -75,6 +81,11 @@ fn main() {
         },
         None => None,
     };
+
+    if args.first().is_some_and(|a| a == "why") {
+        why(&args, filter.as_ref());
+        return;
+    }
 
     let json = args.iter().any(|a| a == "--json");
     let watch = args.iter().any(|a| a == "--watch");
@@ -262,4 +273,152 @@ fn drill_top(report: &stallwatch_core::Report, window_ms: u64) -> String {
         );
     }
     o
+}
+
+/// Answer "what just happened to me" from what the daemon recorded.
+///
+/// Live sampling structurally cannot answer this: a freeze is over by the time
+/// anyone can open a terminal and type. The daemon catches the culprit while it
+/// is still running, which is the only moment it exists to be caught.
+fn why(args: &[String], filter: Option<&stallwatch_core::filter::Filter>) {
+    let count: usize = args
+        .iter()
+        .position(|a| a == "-n")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+
+    let path = stallwatch_core::ipc::incident_log_path();
+    let Ok(body) = std::fs::read_to_string(&path) else {
+        eprintln!(
+            "No incident log at {}.\n\n\
+             stallwatchd records what stalled while it is happening, because a\n\
+             freeze is over by the time you can type. Start it with:\n\n    \
+             systemctl --user enable --now stallwatchd\n",
+            path.display()
+        );
+        std::process::exit(1);
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+
+    // Newest first: the question is always about the most recent freeze.
+    let mut shown = 0;
+    for line in body.lines().rev() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Some(incident) = parse_incident(line) else {
+            continue;
+        };
+        if let Some(f) = filter
+            && !incident.stalls.iter().any(|st| f.matches(st))
+        {
+            continue;
+        }
+        if shown > 0 {
+            println!();
+        }
+        print!("{}", incident.explain(now));
+        shown += 1;
+        if shown >= count {
+            break;
+        }
+    }
+
+    if shown == 0 {
+        println!(
+            "Nothing recorded that matches. The machine has not stalled, or the filter excluded everything."
+        );
+    }
+}
+
+/// Rebuild an incident from one logged line.
+///
+/// Only the fields `explain` needs are recovered; the log is a superset and is
+/// allowed to gain fields without this having to change.
+fn parse_incident(line: &str) -> Option<stallwatch_core::incident::Incident> {
+    use stallwatch_core::incident::{Culprit, Incident, Role};
+    use stallwatch_core::json::{self, Json};
+    use stallwatch_core::{PsiKind, Resource, Severity, Stall, Warning};
+
+    let v = json::parse(line).ok()?;
+    let num = |o: &Json, k: &str| o.get(k).and_then(Json::as_u64).unwrap_or(0);
+    let txt = |o: &Json, k: &str| o.get(k).and_then(Json::as_str).unwrap_or("").to_string();
+
+    let stalls = v
+        .get("stalls")
+        .and_then(Json::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|s| Stall {
+                    unit: txt(s, "unit"),
+                    cgroup: txt(s, "cgroup"),
+                    resource: match txt(s, "resource").as_str() {
+                        "cpu" => Resource::Cpu,
+                        "memory" => Resource::Memory,
+                        _ => Resource::Io,
+                    },
+                    kind: if txt(s, "type") == "some" {
+                        PsiKind::Some
+                    } else {
+                        PsiKind::Full
+                    },
+                    delta_usec: num(s, "delta_usec"),
+                    pressure_pct: s.get("pressure_pct").and_then(Json::as_f64).unwrap_or(0.0),
+                    peak_pct: s.get("peak_pct").and_then(Json::as_f64).unwrap_or(0.0),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let warnings = v
+        .get("warnings")
+        .and_then(Json::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|w| Warning {
+                    source: txt(w, "source"),
+                    severity: match txt(w, "severity").as_str() {
+                        "critical" => Severity::Critical,
+                        "warn" => Severity::Warn,
+                        _ => Severity::Note,
+                    },
+                    transient: w.get("transient").and_then(Json::as_bool).unwrap_or(false),
+                    message: txt(w, "message"),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let culprits = v
+        .get("culprits")
+        .and_then(Json::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|c| Culprit {
+                    pid: num(c, "pid") as u32,
+                    comm: txt(c, "comm"),
+                    blocked_pct: c.get("blocked_pct").and_then(Json::as_f64).unwrap_or(0.0),
+                    bytes: num(c, "bytes"),
+                    role: match txt(c, "role").as_str() {
+                        "cause" => Role::Cause,
+                        "victim" => Role::Victim,
+                        _ => Role::Active,
+                    },
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(Incident {
+        at_unix: num(&v, "at_unix"),
+        window_usec: num(&v, "window_usec"),
+        woke_on: Vec::new(),
+        stalls,
+        warnings,
+        culprits,
+    })
 }
