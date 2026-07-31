@@ -1,8 +1,14 @@
-//! stallwatchd — resident sampler, so stalls can be asked about after the fact.
+//! stallwatchd — resident stall recorder, so stalls can be asked about after
+//! the fact.
 //!
-//! Two threads: one samples the cgroup tree on a fixed tick and pushes frames
-//! into a bounded ring, the other serves queries over a Unix socket. Both share
-//! the ring behind a mutex held only for the push or the read.
+//! Event-driven by default. A PSI trigger per resource sits blocked in the
+//! kernel and nothing runs on a healthy machine; when the kernel reports a
+//! stall past the threshold, one capture samples the cgroup tree and pushes a
+//! frame into a bounded ring. Query threads serve that ring over Unix sockets,
+//! sharing it behind a mutex held only for the push or the read.
+//!
+//! `--poll` restores the old fixed-interval sampler, which is also the
+//! automatic fallback when a kernel or container refuses to register triggers.
 //!
 //! Intended to run as a systemd *user* service. It needs no privileges and has
 //! no business running as root.
@@ -10,12 +16,15 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use stallwatch::attribution::Sampler;
 use stallwatch::ipc::{Format, Request, socket_path, varlink_socket_path};
+use stallwatch::psi::Resource;
 use stallwatch::ring::{Frame, Ring};
+use stallwatch::trigger::{Trigger, Wake};
 use stallwatch::varlink::{self, Call, CallError};
 
 const USAGE: &str = "\
@@ -25,8 +34,12 @@ USAGE:
   stallwatchd [--tick MS] [--history SECS]
 
 OPTIONS:
-  --tick MS            minimum sampling interval (default 1000). The daemon
-                       paces itself slower than this if sweeps are expensive.
+  --threshold MS       stall inside a 2s window that wakes a capture
+                       (default 50). Event-driven; costs nothing when idle.
+  --poll               force the old fixed-interval sampler instead
+  --capture MS         window sampled once woken (default 400)
+  --tick MS            polling interval when --poll or triggers are refused
+                       (default 1000); paced slower if sweeps are expensive.
   --duty PCT           share of one core sampling may use (default 2)
   --history SECS       how much history to retain (default 300)
   --metrics-listen A   serve Prometheus /metrics on A (e.g. 127.0.0.1:9836)
@@ -46,6 +59,87 @@ fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Register a PSI trigger per resource and capture only when one fires.
+///
+/// Returns false if no trigger could be registered, so the caller can fall
+/// back to polling rather than sit silently recording nothing — the one
+/// failure mode a diagnostic must never have.
+fn start_trigger_capture(
+    ring: &Arc<Mutex<Ring>>,
+    threshold: Duration,
+    capture_window: Duration,
+) -> bool {
+    // One watcher thread per resource. Each blocks on its own descriptor, so
+    // the idle cost of the whole daemon is three parked threads.
+    let (tx, rx) = mpsc::channel::<Resource>();
+    let mut registered = 0;
+
+    for res in Resource::ALL {
+        // The kernel exposes no `full` line for CPU, so ask for the line that
+        // actually exists for each resource.
+        let kind = res.primary_kind();
+        match Trigger::new(res, kind, threshold, Duration::from_secs(2)) {
+            Ok(trigger) => {
+                registered += 1;
+                let tx = tx.clone();
+                std::thread::spawn(move || {
+                    loop {
+                        match trigger.wait(None) {
+                            Ok(Wake::Stalled) => {
+                                if tx.send(trigger.resource()).is_err() {
+                                    return; // capture thread gone
+                                }
+                            }
+                            Ok(Wake::Quiet) => {}
+                            Err(e) => {
+                                eprintln!(
+                                    "stallwatchd: {} trigger stopped: {e}",
+                                    trigger.resource()
+                                );
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+            Err(e) => eprintln!("stallwatchd: no {res} trigger: {e}"),
+        }
+    }
+    drop(tx); // so the capture loop ends if every watcher dies
+
+    if registered == 0 {
+        return false;
+    }
+
+    let ring = Arc::clone(ring);
+    std::thread::spawn(move || {
+        while let Ok(first) = rx.recv() {
+            // Several resources usually breach together — an IO storm starves
+            // CPU too. Drain the rest so one event produces one capture rather
+            // than three overlapping sweeps of the same moment.
+            let mut woke_on = vec![first];
+            while let Ok(also) = rx.try_recv() {
+                if !woke_on.contains(&also) {
+                    woke_on.push(also);
+                }
+            }
+
+            // Sample across a short window while the stall is still happening.
+            // The kernel rate-limits to one notification per window, so this
+            // cannot spin even on a permanently stalled machine.
+            let (stalls, window_usec) = stallwatch::attribution::collect(capture_window);
+            if let Ok(mut r) = ring.lock() {
+                r.push(Frame {
+                    at_unix: now_unix(),
+                    window_usec,
+                    stalls,
+                });
+            }
+        }
+    });
+    true
 }
 
 fn main() {
@@ -74,6 +168,9 @@ fn main() {
     let metrics_listen = strflag("--metrics-listen");
     let metrics_textfile = strflag("--metrics-textfile");
     let tick_ms = flag("--tick", 1000).max(100);
+    let force_poll = args.iter().any(|a| a == "--poll");
+    let threshold = Duration::from_millis(flag("--threshold", 50).clamp(1, 900));
+    let capture_window = Duration::from_millis(flag("--capture", 400).clamp(50, 5_000));
     let duty = (flag("--duty", 2) as f64 / 100.0).clamp(0.001, 0.5);
     let history_secs = flag("--history", 300).max(10);
 
@@ -89,27 +186,6 @@ fn main() {
     let listener = bind_or_die(&socket_path());
     let vlistener = bind_or_die(&varlink_socket_path());
 
-    let path = socket_path();
-    if false {
-        if UnixStream::connect(&path).is_ok() {
-            std::process::exit(1);
-        }
-        // Nobody is listening, so this is a socket left by a killed daemon.
-        // Do NOT swallow the removal error: if the runtime dir is read-only
-        // (an over-tight ProtectSystem= in a unit file, for instance) bind()
-        // then fails with a bare "Address already in use", which sends people
-        // hunting for a running process that does not exist.
-        if let Err(e) = std::fs::remove_file(&path) {
-            eprintln!(
-                "stallwatchd: stale socket at {} could not be removed: {e}\n\
-                 (nothing is listening on it. if running under systemd, the unit \
-                 likely needs ReadWritePaths=%t so $XDG_RUNTIME_DIR stays writable)",
-                path.display()
-            );
-            std::process::exit(1);
-        }
-    }
-
     eprintln!(
         "stallwatchd: listening on {} and {} (tick {}ms, {} frames ~ {}s history)",
         socket_path().display(),
@@ -119,15 +195,35 @@ fn main() {
         history_secs
     );
 
-    // Sampler thread.
+    // Capture.
     //
-    // Retains the previous snapshot, so each tick costs ONE sweep of the cgroup
-    // tree rather than two. On a 152-cgroup desktop a sweep is ~10ms; on a
-    // 2,000-cgroup node it is over a hundred. A fixed tick that is harmless on
-    // the former is ~26% of a core on the latter, which would make a tool built
-    // to observe contention a cause of it. The interval is therefore derived
-    // from measured sweep cost against a duty-cycle budget.
-    {
+    // Preferred mode is event-driven: register a PSI trigger per resource and
+    // block. A healthy machine costs literally nothing, because there is no
+    // timer, and a stall shorter than any sane polling interval is still caught
+    // because the kernel is the one doing the watching.
+    //
+    // Everything else in this space polls, including oomd, whose default
+    // interval is five seconds. A five-second poll cannot see a two-second
+    // freeze except by luck.
+    //
+    // Polling remains as a fallback, because a kernel can be built without
+    // trigger support and a container can refuse the write.
+    if !force_poll && start_trigger_capture(&ring, threshold, capture_window) {
+        eprintln!(
+            "stallwatchd: event-driven; idle until a stall exceeds {}ms, then capturing {}ms",
+            threshold.as_millis(),
+            capture_window.as_millis()
+        );
+    } else {
+        if !force_poll {
+            eprintln!("stallwatchd: PSI triggers unavailable, falling back to polling");
+        }
+        // Retains the previous snapshot, so each tick costs ONE sweep of the
+        // cgroup tree rather than two. On a 152-cgroup desktop a sweep is ~10ms;
+        // on a 2,000-cgroup node it is over a hundred. A fixed tick harmless on
+        // the former is ~26% of a core on the latter, which would make a tool
+        // built to observe contention a cause of it. The interval is therefore
+        // derived from measured sweep cost against a duty-cycle budget.
         let ring = Arc::clone(&ring);
         let floor = Duration::from_millis(tick_ms);
         let ceil = Duration::from_secs(30);

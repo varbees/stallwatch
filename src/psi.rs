@@ -38,7 +38,7 @@ impl Resource {
     /// if a task is waiting for CPU then by definition another task is running
     /// on it, so total starvation is impossible by construction. For CPU we
     /// therefore have to use `some`.
-    pub(crate) fn primary_kind(self) -> PsiKind {
+    pub fn primary_kind(self) -> PsiKind {
         match self {
             Resource::Cpu => PsiKind::Some,
             _ => PsiKind::Full,
