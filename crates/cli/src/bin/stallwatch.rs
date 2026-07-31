@@ -14,6 +14,7 @@ stallwatch — name the unit that is stalling your Linux system
 USAGE:
   stallwatch [--watch] [--json] [--window MS]
   stallwatch --since SECS [--json]
+  stallwatch --filter EXPR
 
 OPTIONS:
   --window MS    sampling window in milliseconds (default 1000)
@@ -23,6 +24,10 @@ OPTIONS:
                   can type, so live sampling cannot answer this)
   --processes    after finding the guilty cgroup, name the process inside it
   --json         machine-readable output
+  --filter EXPR  keep only stalls matching an expression, e.g.
+                   'resource == io and peak > 70'
+                   'unit ~ firefox|chrome and delta_ms > 500'
+  --fields       list every field a filter can name
   -h, --help     this text
 
 Reads /proc and /sys as the invoking user. No privileges required.
@@ -35,6 +40,41 @@ fn main() {
         print!("{USAGE}");
         return;
     }
+
+    if args.iter().any(|a| a == "--fields") {
+        println!("Fields available to --filter:\n");
+        for (name, help) in stallwatch_core::filter::FIELDS {
+            println!("  {name:<20} {help}");
+        }
+        println!(
+            "\nOperators: == != > < >= <=  and  ~ (contains, | means or)\n\
+             Combine with: and  or  not  ( )\n\
+             Numbers take suffixes: 500ms  2s  100M  1GiB"
+        );
+        return;
+    }
+
+    // Compile before doing any sampling: a typo should fail in microseconds,
+    // not after a full window has elapsed.
+    let filter = match args.iter().position(|a| a == "--filter") {
+        Some(i) => match args.get(i + 1) {
+            Some(expr) => match stallwatch_core::filter::Filter::parse(expr) {
+                Ok(f) => Some(f),
+                Err(e) => {
+                    eprintln!("stallwatch: bad filter: {e}");
+                    eprintln!("  {expr}");
+                    eprintln!("  {}^", " ".repeat(e.at));
+                    eprintln!("\nRun `stallwatch --fields` to see what you can filter on.");
+                    std::process::exit(2);
+                }
+            },
+            None => {
+                eprintln!("stallwatch: --filter needs an expression");
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
 
     let json = args.iter().any(|a| a == "--json");
     let watch = args.iter().any(|a| a == "--watch");
@@ -77,7 +117,18 @@ fn main() {
     let processes = args.iter().any(|a| a == "--processes");
 
     loop {
-        let report = stallwatch_core::observe(Duration::from_millis(window_ms));
+        let mut report = stallwatch_core::observe(Duration::from_millis(window_ms));
+
+        // Filter after sampling, never before: the attribution has to see the
+        // whole tree to decide who is responsible. Narrowing the input would
+        // change the answer rather than narrowing the view of it.
+        if let Some(f) = &filter {
+            use stallwatch_core::filter::Queryable as _;
+            report.stalls.retain(|st| f.matches(st));
+            report
+                .warnings
+                .retain(|w| f.matches(w) || w.field_str("warning.source").is_none());
+        }
 
         if watch && !json {
             // Clear screen, home cursor.
