@@ -108,8 +108,8 @@ impl Notifier {
         // to dismiss the tool, including the time it has something useful to
         // say. Found by running it on a desktop that had exactly this.
         let kernel_side = incident.culprits.iter().all(|c| c.role != Role::Cause);
-        let only_transient = !incident.warnings.is_empty()
-            && incident.warnings.iter().all(|w| w.transient);
+        let only_transient =
+            !incident.warnings.is_empty() && incident.warnings.iter().all(|w| w.transient);
         if kernel_side && only_transient {
             self.suppressed = self.suppressed.saturating_add(1);
             return None;
