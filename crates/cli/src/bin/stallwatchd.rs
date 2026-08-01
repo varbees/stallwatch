@@ -38,6 +38,7 @@ USAGE:
 OPTIONS:
   --threshold MS       stall inside a 2s window that wakes a capture
                        (default 50). Event-driven; costs nothing when idle.
+  --no-notify          do not announce stalls on the desktop
   --poll               force the old fixed-interval sampler instead
   --capture MS         window sampled once woken (default 400)
   --tick MS            polling interval when --poll or triggers are refused
@@ -161,6 +162,7 @@ fn start_trigger_capture(
     threshold: Duration,
     capture_window: Duration,
     rules: Arc<Vec<stallwatch_core::config::Rule>>,
+    notifier: Arc<Mutex<stallwatch_core::notify::Notifier>>,
 ) -> bool {
     // One watcher thread per resource. Each blocks on its own descriptor, so
     // the idle cost of the whole daemon is three parked threads.
@@ -270,6 +272,16 @@ fn start_trigger_capture(
             append_incident(&incident);
             fire_rules(&rules, &incident);
 
+            // Announce last, so a slow notification daemon cannot delay the
+            // record of what happened.
+            let notice = notifier
+                .lock()
+                .ok()
+                .and_then(|mut n| n.consider(&incident, incident.at_unix));
+            if let Some(notice) = notice {
+                stallwatch_core::notify::send(&notice);
+            }
+
             if let Ok(mut r) = ring.lock() {
                 r.push(Frame {
                     at_unix: incident.at_unix,
@@ -377,7 +389,32 @@ fn main() {
         eprintln!("stallwatchd: {} rule(s) loaded", rules.len());
     }
 
-    if !force_poll && start_trigger_capture(&ring, threshold, capture_window, Arc::clone(&rules)) {
+    // On by default. Notifying only when a rule says so means almost nobody
+    // ever sees anything, because almost nobody writes rules.
+    let notifier = Arc::new(Mutex::new(stallwatch_core::notify::Notifier::new(
+        cfg.notify_enabled.value && !args.iter().any(|a| a == "--no-notify"),
+        cfg.notify_min_peak.value as f64,
+        Duration::from_secs(cfg.notify_cooldown_secs.value),
+    )));
+    if let Ok(n) = notifier.lock()
+        && n.enabled
+    {
+        eprintln!(
+            "stallwatchd: announcing stalls above {:.0}% peak, at most one per {}s",
+            n.min_peak,
+            n.cooldown.as_secs()
+        );
+    }
+
+    if !force_poll
+        && start_trigger_capture(
+            &ring,
+            threshold,
+            capture_window,
+            Arc::clone(&rules),
+            Arc::clone(&notifier),
+        )
+    {
         eprintln!(
             "stallwatchd: event-driven; idle until a stall exceeds {}ms, then capturing {}ms",
             threshold.as_millis(),

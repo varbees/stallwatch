@@ -26,6 +26,22 @@ history_secs = 300
 resources = ["cpu", "memory", "io"]
 
 
+[notify]
+# Announce bad stalls on the desktop as they happen. On by default: a recorder
+# you have to remember to query is an archive, not a feedback loop.
+enabled = true
+
+# Worst-tick percentage below which nothing is said. 70 is roughly "you would
+# have noticed this". Lower it if you want to see everything.
+min_peak = 70
+
+# At most one notice per this many seconds, however bad it gets. A saturated
+# disk produces a capture every couple of seconds, and twenty popups about one
+# freeze is how a tool gets uninstalled. Anything held back is counted and
+# reported in the next notice, so the number is never understated.
+cooldown_secs = 60
+
+
 # ── rules ─────────────────────────────────────────────────────────────
 #
 # `when` is the same filter language as `stallwatch --filter`.

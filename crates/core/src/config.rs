@@ -131,6 +131,12 @@ pub struct Config {
     pub history_secs: Sourced<u64>,
     /// Which resources get a trigger.
     pub resources: Sourced<Vec<String>>,
+    /// Announce bad stalls on the desktop as they happen.
+    pub notify_enabled: Sourced<bool>,
+    /// Worst-tick percentage below which nothing is announced.
+    pub notify_min_peak: Sourced<u64>,
+    /// Seconds between notices, however bad it gets.
+    pub notify_cooldown_secs: Sourced<u64>,
     pub rules: Vec<Rule>,
     /// Files that were actually read, in the order applied.
     pub loaded: Vec<PathBuf>,
@@ -143,6 +149,9 @@ impl Default for Config {
             capture_ms: Sourced::new(400),
             history_secs: Sourced::new(300),
             resources: Sourced::new(vec!["cpu".into(), "memory".into(), "io".into()]),
+            notify_enabled: Sourced::new(true),
+            notify_min_peak: Sourced::new(crate::notify::DEFAULT_MIN_PEAK as u64),
+            notify_cooldown_secs: Sourced::new(crate::notify::DEFAULT_COOLDOWN.as_secs()),
             rules: Vec::new(),
             loaded: Vec::new(),
         }
@@ -205,6 +214,20 @@ impl Config {
             }
             if let Some(v) = t.strings("resources") {
                 self.resources.set(v, origin.clone());
+            }
+        }
+
+        if let Some(t) = doc.tables.get("notify") {
+            if let Some(v) = t.bool("enabled") {
+                self.notify_enabled.set(v, origin.clone());
+            }
+            if let Some(v) = t.int("min_peak") {
+                self.notify_min_peak
+                    .set(v.clamp(0, 100) as u64, origin.clone());
+            }
+            if let Some(v) = t.int("cooldown_secs") {
+                self.notify_cooldown_secs
+                    .set(v.max(0) as u64, origin.clone());
             }
         }
 
@@ -303,6 +326,21 @@ impl Config {
             "resources",
             self.resources.value.join(","),
             self.resources.origin
+        );
+        let _ = writeln!(
+            o,
+            "{:<16} {:<28} {}",
+            "notify.enabled", self.notify_enabled.value, self.notify_enabled.origin
+        );
+        let _ = writeln!(
+            o,
+            "{:<16} {:<28} {}",
+            "notify.min_peak", self.notify_min_peak.value, self.notify_min_peak.origin
+        );
+        let _ = writeln!(
+            o,
+            "{:<16} {:<28} {}",
+            "notify.cooldown", self.notify_cooldown_secs.value, self.notify_cooldown_secs.origin
         );
 
         if self.rules.is_empty() {
@@ -432,10 +470,10 @@ fn parse_toml(body: &str) -> Result<Doc, TomlError> {
 
         if let Some(rest) = s.strip_prefix('[') {
             let name = rest.trim_end_matches(']').trim().to_string();
-            if name != "capture" {
+            if name != "capture" && name != "notify" {
                 return Err(TomlError {
                     line,
-                    msg: format!("unknown table `[{name}]`; only `[capture]` exists"),
+                    msg: format!("unknown table `[{name}]`; expected `[capture]` or `[notify]`"),
                 });
             }
             doc.tables.entry(name.clone()).or_insert_with(|| Table {

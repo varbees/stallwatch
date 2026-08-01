@@ -46,6 +46,7 @@ pub mod incident;
 pub mod ipc;
 pub mod json;
 pub mod metrics;
+pub mod notify;
 pub mod pathology;
 pub mod process;
 pub mod psi;
