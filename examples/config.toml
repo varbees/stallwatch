@@ -35,11 +35,16 @@ enabled = true
 # have noticed this". Lower it if you want to see everything.
 min_peak = 70
 
-# At most one notice per this many seconds, however bad it gets. A saturated
-# disk produces a capture every couple of seconds, and twenty popups about one
-# freeze is how a tool gets uninstalled. Anything held back is counted and
-# reported in the next notice, so the number is never understated.
-cooldown_secs = 60
+# At most one notice per this many seconds, however bad it gets. Five minutes,
+# because a machine with a background condition stalls repeatedly for as long
+# as that condition lasts, and a popup every minute for half an hour is how a
+# tool gets uninstalled. Anything held back is counted and reported in the next
+# notice, so the number is never understated.
+#
+# Nothing is said at all when the only explanation is something that clears
+# itself and nobody caused — a discard backlog is real, is why the machine is
+# slow, and the correct response is to wait.
+cooldown_secs = 300
 
 
 # ── rules ─────────────────────────────────────────────────────────────

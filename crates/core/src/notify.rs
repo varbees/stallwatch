@@ -27,8 +27,14 @@ use crate::incident::{Incident, Role};
 
 /// Default: only speak up about something the user would have felt.
 pub const DEFAULT_MIN_PEAK: f64 = 70.0;
-/// Default: at most one notice per minute, however bad it gets.
-pub const DEFAULT_COOLDOWN: Duration = Duration::from_secs(60);
+/// Default: at most one notice per five minutes, however bad it gets.
+///
+/// A minute sounds reasonable and is not. A machine with a background
+/// condition — a btrfs discard backlog, a slow external disk — stalls
+/// repeatedly for as long as it lasts, and a popup every minute for half an
+/// hour is how this gets uninstalled. Measured on a real desktop before
+/// raising it.
+pub const DEFAULT_COOLDOWN: Duration = Duration::from_secs(300);
 
 /// What to say.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,6 +95,23 @@ impl Notifier {
         }
         let worst = incident.worst()?;
         if worst.peak_pct < self.min_peak {
+            return None;
+        }
+
+        // Say nothing when the only explanation is a condition that clears
+        // itself and nobody caused.
+        //
+        // A notification exists to prompt a decision. "btrfs is working
+        // through a discard backlog" is real, is why the machine is slow, and
+        // is not actionable — the correct response is to wait. Repeating it
+        // every few minutes for as long as the backlog lasts trains the user
+        // to dismiss the tool, including the time it has something useful to
+        // say. Found by running it on a desktop that had exactly this.
+        let kernel_side = incident.culprits.iter().all(|c| c.role != Role::Cause);
+        let only_transient = !incident.warnings.is_empty()
+            && incident.warnings.iter().all(|w| w.transient);
+        if kernel_side && only_transient {
+            self.suppressed = self.suppressed.saturating_add(1);
             return None;
         }
 
@@ -220,7 +243,9 @@ mod tests {
     fn what_was_held_back_is_reported_rather_than_lost() {
         // A single notice after a storm must not understate it, or the user
         // reads "one stall" when there were thirty.
-        let mut n = Notifier::default();
+        // Cooldown stated outright, so raising the default cannot silently
+        // invalidate what this is testing.
+        let mut n = Notifier::new(true, DEFAULT_MIN_PEAK, Duration::from_secs(60));
         n.consider(&incident(95.0, 500), 0).unwrap();
         for t in 1..=5 {
             n.consider(&incident(95.0, 500), t);
@@ -248,6 +273,9 @@ mod tests {
 
     #[test]
     fn transient_conditions_say_so_because_it_changes_what_you_do() {
+        // A transient condition is context on an otherwise actionable notice.
+        // On its own it is not worth interrupting anyone for, which is what
+        // `says_nothing_when_the_only_explanation_clears_itself` covers.
         let mut n = Notifier::default();
         let mut i = incident(95.0, 900);
         i.warnings = vec![Warning {
@@ -256,8 +284,90 @@ mod tests {
             transient: true,
             message: "discard backlog".into(),
         }];
+        i.culprits = vec![Culprit {
+            pid: 7,
+            comm: "dd".into(),
+            blocked_pct: 2.0,
+            bytes: 5 << 30,
+            role: Role::Cause,
+        }];
         let notice = n.consider(&i, 100).unwrap();
         assert!(notice.body.contains("clears itself"), "{}", notice.body);
+    }
+
+    #[test]
+    fn says_nothing_when_the_only_explanation_clears_itself() {
+        // Found on a real desktop: a btrfs discard backlog stalled the machine
+        // every few minutes for half an hour. Every notice was true, none was
+        // actionable, and the correct response to all of them was to wait.
+        let mut n = Notifier::default();
+        let mut i = incident(95.0, 900);
+        i.warnings = vec![Warning {
+            source: "btrfs".into(),
+            severity: Severity::Note,
+            transient: true,
+            message: "discard backlog".into(),
+        }];
+        assert!(
+            n.consider(&i, 100).is_none(),
+            "should stay quiet about something nobody can act on"
+        );
+    }
+
+    #[test]
+    fn still_speaks_when_a_process_is_to_blame_even_if_something_is_transient() {
+        // The transient condition is context, not an excuse for silence: there
+        // is a named process the user can actually do something about.
+        let mut n = Notifier::default();
+        let mut i = incident(95.0, 900);
+        i.warnings = vec![Warning {
+            source: "btrfs".into(),
+            severity: Severity::Note,
+            transient: true,
+            message: "discard backlog".into(),
+        }];
+        i.culprits = vec![Culprit {
+            pid: 7,
+            comm: "dd".into(),
+            blocked_pct: 2.0,
+            bytes: 5 << 30,
+            role: Role::Cause,
+        }];
+        let notice = n.consider(&i, 100).expect("a named cause is actionable");
+        assert!(notice.body.contains("dd [7]"), "{}", notice.body);
+    }
+
+    #[test]
+    fn a_non_transient_warning_still_speaks() {
+        // btrfs allocator exhaustion does not clear itself and needs a human.
+        let mut n = Notifier::default();
+        let mut i = incident(95.0, 900);
+        i.warnings = vec![Warning {
+            source: "btrfs".into(),
+            severity: Severity::Warn,
+            transient: false,
+            message: "allocator exhausted".into(),
+        }];
+        assert!(n.consider(&i, 100).is_some());
+    }
+
+    #[test]
+    fn suppressed_transients_are_still_counted() {
+        // Quiet is not the same as forgotten; the next real notice says how
+        // much was held back.
+        let mut n = Notifier::default();
+        let mut quiet = incident(95.0, 900);
+        quiet.warnings = vec![Warning {
+            source: "btrfs".into(),
+            severity: Severity::Note,
+            transient: true,
+            message: "discard backlog".into(),
+        }];
+        for t in 0..4 {
+            assert!(n.consider(&quiet, t).is_none());
+        }
+        let real = n.consider(&incident(95.0, 900), 10_000).unwrap();
+        assert_eq!(real.also_suppressed, 4);
     }
 
     #[test]
