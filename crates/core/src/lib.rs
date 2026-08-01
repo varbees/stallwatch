@@ -40,6 +40,7 @@ use std::time::Duration;
 
 pub mod attribution;
 pub mod cgroup;
+pub mod config;
 pub mod filter;
 pub mod incident;
 pub mod ipc;

@@ -56,6 +56,63 @@ Serves two sockets in $XDG_RUNTIME_DIR:
         dev.stallwatch.Monitor.GetHistory '{\"seconds\":30}'
 ";
 
+/// Run any rule whose `when` matches something in this incident.
+///
+/// Each rule fires at most once per incident, on the first stall that matches,
+/// so a rule written for "the browser" does not fire five times because five
+/// of its cgroups stalled together.
+fn fire_rules(rules: &[stallwatch_core::config::Rule], incident: &Incident) {
+    use stallwatch_core::config::expand;
+
+    for rule in rules {
+        let Some(hit) = incident.stalls.iter().find(|s| rule.when.matches(*s)) else {
+            continue;
+        };
+
+        if rule.action.notify {
+            // notify-send is the lowest common denominator on a Linux desktop
+            // and absent on a server, so a failure here is not worth a word.
+            let _ = std::process::Command::new("notify-send")
+                .arg(format!("stallwatch: {}", rule.name))
+                .arg(expand("{unit} froze you {delta_ms}ms on {resource}", hit))
+                .status();
+        }
+
+        if let Some(template) = &rule.action.run {
+            let cmd = expand(template, hit);
+            // Through a shell, because a rule is something the user wrote for
+            // themselves and pipes and redirects are the point of it.
+            match std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(&cmd)
+                .status()
+            {
+                Ok(st) if !st.success() => {
+                    eprintln!("stallwatchd: rule `{}` exited {st}", rule.name);
+                }
+                Err(e) => eprintln!("stallwatchd: rule `{}` failed: {e}", rule.name),
+                _ => {}
+            }
+        }
+
+        if let Some(path) = &rule.action.log {
+            use std::io::Write as _;
+            let written = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .and_then(|mut f| writeln!(f, "{}", incident.to_jsonl()));
+            if let Err(e) = written {
+                eprintln!(
+                    "stallwatchd: rule `{}` cannot write {}: {e}",
+                    rule.name,
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
 /// Append one incident to the log.
 ///
 /// Best-effort by design: a diagnostic that dies because it could not write a
@@ -103,6 +160,7 @@ fn start_trigger_capture(
     ring: &Arc<Mutex<Ring>>,
     threshold: Duration,
     capture_window: Duration,
+    rules: Arc<Vec<stallwatch_core::config::Rule>>,
 ) -> bool {
     // One watcher thread per resource. Each blocks on its own descriptor, so
     // the idle cost of the whole daemon is three parked threads.
@@ -210,6 +268,7 @@ fn start_trigger_capture(
                 culprits,
             };
             append_incident(&incident);
+            fire_rules(&rules, &incident);
 
             if let Ok(mut r) = ring.lock() {
                 r.push(Frame {
@@ -248,12 +307,36 @@ fn main() {
     ) as usize;
     let metrics_listen = strflag("--metrics-listen");
     let metrics_textfile = strflag("--metrics-textfile");
+    // Config first, flags over it. A flag is the most specific statement of
+    // intent, so it must win over any file.
+    let mut cfg = match stallwatch_core::config::Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("stallwatchd: {e}");
+            eprintln!(
+                "Refusing to start with a config it cannot parse; a silently dropped rule is worse."
+            );
+            std::process::exit(2);
+        }
+    };
+    for (key, name) in [
+        ("threshold_ms", "--threshold"),
+        ("capture_ms", "--capture"),
+        ("history_secs", "--history"),
+    ] {
+        if args.iter().any(|a| a == name) {
+            cfg.note_flag(key, name);
+        }
+    }
+
     let tick_ms = flag("--tick", 1000).max(100);
     let force_poll = args.iter().any(|a| a == "--poll");
-    let threshold = Duration::from_millis(flag("--threshold", 50).clamp(1, 900));
-    let capture_window = Duration::from_millis(flag("--capture", 400).clamp(50, 5_000));
+    let threshold =
+        Duration::from_millis(flag("--threshold", cfg.threshold_ms.value).clamp(1, 900));
+    let capture_window =
+        Duration::from_millis(flag("--capture", cfg.capture_ms.value).clamp(50, 5_000));
     let duty = (flag("--duty", 2) as f64 / 100.0).clamp(0.001, 0.5);
-    let history_secs = flag("--history", 300).max(10);
+    let history_secs = flag("--history", cfg.history_secs.value).max(10);
 
     if !stallwatch_core::psi_available() {
         eprintln!("stallwatchd: no PSI on this kernel (/proc/pressure missing); refusing to start");
@@ -289,7 +372,12 @@ fn main() {
     //
     // Polling remains as a fallback, because a kernel can be built without
     // trigger support and a container can refuse the write.
-    if !force_poll && start_trigger_capture(&ring, threshold, capture_window) {
+    let rules = Arc::new(std::mem::take(&mut cfg.rules));
+    if !rules.is_empty() {
+        eprintln!("stallwatchd: {} rule(s) loaded", rules.len());
+    }
+
+    if !force_poll && start_trigger_capture(&ring, threshold, capture_window, Arc::clone(&rules)) {
         eprintln!(
             "stallwatchd: event-driven; idle until a stall exceeds {}ms, then capturing {}ms",
             threshold.as_millis(),

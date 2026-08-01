@@ -1,0 +1,54 @@
+# stallwatch configuration
+#
+# Copy to ~/.config/stallwatch/config.toml
+# Check what is actually in effect, and which layer won:  stallwatch config
+#
+# Layers, lowest precedence first:
+#   /etc/xdg/stallwatch/config.toml
+#   ~/.config/stallwatch/config.toml
+#   STALLWATCH_* environment variables
+#   command-line flags
+
+[capture]
+# Stall inside a 2s window that wakes a capture. The kernel does the watching,
+# so a lower number costs nothing while the machine is healthy.
+threshold_ms = 50
+
+# How long to sample once woken. Longer sees more of the process that caused
+# it; shorter reacts sooner.
+capture_ms = 400
+
+# How much history the ring keeps, in seconds.
+history_secs = 300
+
+# Which resources get a trigger. /proc/pressure/irq exists on newer kernels
+# but is not read yet.
+resources = ["cpu", "memory", "io"]
+
+
+# ── rules ─────────────────────────────────────────────────────────────
+#
+# `when` is the same filter language as `stallwatch --filter`.
+# Run `stallwatch --fields` to see everything you can match on.
+#
+# Placeholders: {unit} {cgroup} {resource} {delta_ms} {pct} {peak}
+#
+# IMPORTANT: rules run inside the daemon's sandbox. The packaged unit sets
+# PrivateTmp=true, so redirecting to /tmp writes into a private namespace and
+# appears to do nothing. Use `logger`, or `log =` below, or relax the unit.
+
+[[rule]]
+name   = "the browser is eating my disk"
+when   = 'resource == io and unit ~ "firefox|chrome|zen" and peak > 70'
+notify = true
+
+[[rule]]
+name = "anything that froze me for over a second"
+when = 'delta_ms > 1s'
+run  = 'logger -t stallwatch "{unit} froze me {delta_ms}ms on {resource}"'
+
+[[rule]]
+name = "keep a record of the bad ones"
+when = 'peak > 80'
+# Relative paths resolve inside the daemon's working directory; prefer absolute.
+log  = "/home/you/.local/state/stallwatch/severe.jsonl"

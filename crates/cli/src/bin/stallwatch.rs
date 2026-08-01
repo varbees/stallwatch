@@ -16,6 +16,7 @@ USAGE:
   stallwatch --since SECS [--json]
   stallwatch --filter EXPR
   stallwatch why [--filter EXPR] [-n COUNT]
+  stallwatch config
 
 OPTIONS:
   --window MS    sampling window in milliseconds (default 1000)
@@ -35,6 +36,7 @@ OPTIONS:
 COMMANDS:
   why            what actually stopped you, in plain words, from what
                  stallwatchd recorded while it was happening
+  config         every setting, its value, and which file or flag set it
 
 Reads /proc and /sys as the invoking user. No privileges required.
 ";
@@ -81,6 +83,17 @@ fn main() {
         },
         None => None,
     };
+
+    if args.first().is_some_and(|a| a == "config") {
+        match stallwatch_core::config::Config::load() {
+            Ok(c) => print!("{}", c.explain()),
+            Err(e) => {
+                eprintln!("stallwatch: {e}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
 
     if args.first().is_some_and(|a| a == "why") {
         why(&args, filter.as_ref());
