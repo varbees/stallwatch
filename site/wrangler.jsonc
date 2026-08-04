@@ -3,11 +3,20 @@
   "name": "stallwatch",
   "compatibility_date": "2026-07-04",
 
-  // Pure static assets — there is no Worker script. The page is one HTML file
-  // with no build step, no framework and no external requests, which is the
-  // same constraint the binary it describes is held to.
+  // The page is still one HTML file with no build step, no framework and no
+  // external requests — the same constraint the binary it describes is held to.
+  // The Worker script exists only to redirect the old hostname; every other
+  // request falls straight through to the assets binding.
+  "main": "./worker.js",
+  "compatibility_flags": ["nodejs_compat"],
   "assets": {
-    "directory": "./public"
+    "directory": "./public",
+    "binding": "ASSETS",
+    // Without this the asset handler answers first and 404s unmatched paths
+    // without ever invoking the script, so the old-hostname redirect would
+    // never run. The redirect is decided by Host, not by path, so there is no
+    // path list that could scope this more narrowly.
+    "run_worker_first": true
   },
 
   // Served from antharmaya.com/tools/stallwatch so link authority pools into one
@@ -20,6 +29,9 @@
   // copy of that command already in the wild is unfixable. -fsSL includes -L,
   // so a 301 is followed; without -L this move would break every installer.
   "routes": [
-    { "pattern": "antharmaya.com/tools/stallwatch*", "zone_name": "antharmaya.com" }
+    { "pattern": "antharmaya.com/tools/stallwatch*", "zone_name": "antharmaya.com" },
+    // Kept so the published curl installer still reaches this worker, which
+    // then 301s it. Removing it would break every installer already in the wild.
+    { "pattern": "stallwatch.antharmaya.com", "custom_domain": true }
   ]
 }
