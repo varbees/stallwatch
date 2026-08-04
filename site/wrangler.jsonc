@@ -10,7 +10,16 @@
     "directory": "./public"
   },
 
+  // Served from antharmaya.com/tools/stallwatch so link authority pools into one
+  // domain. Workers Assets maps a URL path straight onto a file path and has no
+  // basePath option, so public/ is nested to match the route rather than the
+  // route being bent to match the files.
+  //
+  // The old hostname must stay alive as a redirect: the published installer is
+  // curl -fsSL https://stallwatch.antharmaya.com/install.sh | sh, and every
+  // copy of that command already in the wild is unfixable. -fsSL includes -L,
+  // so a 301 is followed; without -L this move would break every installer.
   "routes": [
-    { "pattern": "stallwatch.antharmaya.com", "custom_domain": true }
+    { "pattern": "antharmaya.com/tools/stallwatch*", "zone_name": "antharmaya.com" }
   ]
 }

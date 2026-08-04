@@ -1,4 +1,4 @@
-# site/ — stallwatch.antharmaya.com
+# site/ — antharmaya.com/tools/stallwatch
 
 One HTML file. No build step, no framework, no bundler, no webfonts, and no
 external requests of any kind — the same constraint the binary is held to, for
@@ -20,7 +20,7 @@ cd site
 npx wrangler deploy
 ```
 
-The custom domain `stallwatch.antharmaya.com` is declared in `wrangler.jsonc`
+The path route `antharmaya.com/tools/stallwatch*` is declared in `wrangler.jsonc`
 and must exist as a zone on the account first.
 
 ## The installer copy

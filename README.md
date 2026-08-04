@@ -67,7 +67,7 @@ That gap is what this fills.
 ## Install
 
 ```sh
-curl -fsSL https://stallwatch.antharmaya.com/install.sh | sh
+curl -fsSL https://antharmaya.com/tools/stallwatch/install.sh | sh
 ```
 
 Puts two static binaries in `~/.local/bin`. No sudo, no package manager, and

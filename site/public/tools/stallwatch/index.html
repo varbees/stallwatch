@@ -5,17 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>stallwatch — name the unit that froze your Linux box</title>
 <meta name="description" content="Linux has measured stall time in every cgroup since 4.20. Almost nothing reads it. stallwatch names the systemd unit — and the process inside it — that stopped your system. Zero dependencies, no root.">
-<link rel="canonical" href="https://stallwatch.antharmaya.com/">
+<link rel="canonical" href="https://antharmaya.com/tools/stallwatch/">
 <meta property="og:type" content="website">
 <meta property="og:title" content="stallwatch — name the unit that froze your Linux box">
 <meta property="og:description" content="Your machine froze. Every monitor says it's fine. stallwatch reads per-cgroup Pressure Stall Information and names the unit, then the process inside it.">
-<meta property="og:url" content="https://stallwatch.antharmaya.com/">
-<meta property="og:image" content="https://stallwatch.antharmaya.com/og.png">
+<meta property="og:url" content="https://antharmaya.com/tools/stallwatch/">
+<meta property="og:image" content="https://antharmaya.com/tools/stallwatch/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Two instruments reading the same ten seconds: top and free report a calm machine while /proc/pressure shows io full at 51 percent.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://stallwatch.antharmaya.com/og.png">
+<meta name="twitter:image" content="https://antharmaya.com/tools/stallwatch/og.png">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%230a0c11'/><rect x='2' y='7' width='2' height='6' fill='%23ff7a45'/><rect x='5' y='4' width='2' height='9' fill='%23ff7a45'/><rect x='8' y='9' width='2' height='4' fill='%23ff7a45'/><rect x='11' y='3' width='2' height='10' fill='%23ff7a45'/></svg>">
 <style>
 /* ─────────────────────────────────────────────────────────────────
@@ -250,7 +250,7 @@ footer a{color:var(--dim)}
     <div class="install">
       <div class="cmd">
         <span class="p">$</span>
-        <code id="cmd">curl -fsSL https://stallwatch.antharmaya.com/install.sh | sh</code>
+        <code id="cmd">curl -fsSL https://antharmaya.com/tools/stallwatch/install.sh | sh</code>
         <button class="copy" id="copy" type="button">copy</button>
       </div>
       <p class="install-note">

@@ -2,7 +2,7 @@
 # stallwatch installer — https://github.com/varbees/stallwatch
 #
 # Usage:
-#   curl -fsSL https://stallwatch.antharmaya.com/install.sh | sh
+#   curl -fsSL https://antharmaya.com/tools/stallwatch/install.sh | sh
 #
 # Environment:
 #   STALLWATCH_VERSION   install a specific tag (default: latest release)
