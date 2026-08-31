@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.1 — 2026-08-31
+
+`stallwatch doctor` also checks whether anything is actually watching: the daemon
+answers on its socket, and the incident log is inside its cap. A tool that passes
+every capability probe while its daemon is dead still tells you nothing, and the
+question people ask is always retrospective.
+
+The daemon's startup line no longer advertises the peak-pressure threshold it
+stopped using in v0.2.0.
+
 ## v0.2.0 — 2026-08-31
 
 The first month of continuous real use, and what reading its own output corrected.
