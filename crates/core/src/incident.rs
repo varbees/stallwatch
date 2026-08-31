@@ -19,34 +19,10 @@
 use std::fmt::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub use crate::Role;
+
 use crate::process::ProcCulprit;
-use crate::{Report, Stall, Warning};
-
-/// What a process was doing during the stall.
-///
-/// PSI measures who is *blocked*, so the worst-hit cgroup is usually the
-/// casualty rather than the culprit. Bytes moved separate the two: a process
-/// pushing data through a saturated queue is causing the stall even while it
-/// shows no blocking of its own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Role {
-    /// Moving data, not blocked. This is what stopped you.
-    Cause,
-    /// Blocked, moving nothing. This is what got stopped.
-    Victim,
-    /// Both, which is normal for a process fighting for its own IO.
-    Active,
-}
-
-impl Role {
-    fn describe(self) -> &'static str {
-        match self {
-            Role::Cause => "cause",
-            Role::Victim => "victim",
-            Role::Active => "active",
-        }
-    }
-}
+use crate::{Cause, Report, Stall, Warning};
 
 /// A process caught during an incident, with a verdict attached.
 #[derive(Clone, Debug)]
@@ -66,21 +42,33 @@ impl Culprit {
     /// mistake every other tool leads them into.
     pub fn from_proc(p: &ProcCulprit) -> Self {
         let bytes = p.read_bytes + p.write_bytes;
-        let mib = bytes as f64 / 1_048_576.0;
-        let blocked = p.blocked_pct();
-        let role = if mib >= 1.0 && blocked < 50.0 {
-            Role::Cause
-        } else if blocked >= 50.0 && mib < 1.0 {
-            Role::Victim
-        } else {
-            Role::Active
-        };
         Self {
             pid: p.pid,
             comm: p.comm.clone(),
-            blocked_pct: blocked,
+            blocked_pct: p.blocked_pct(),
             bytes,
-            role,
+            role: Self::role_from(bytes, p.blocked_pct()),
+        }
+    }
+
+    /// Classify a process from what we could actually read about it.
+    ///
+    /// `/proc/<pid>/io` is unreadable for any process the invoking user does
+    /// not own, so `bytes` is zero for kernel threads and root daemons — which
+    /// is most of what stalls a machine. The old rule required >=1 MiB here to
+    /// say `Cause`, and consequently said it zero times across 520,155 real
+    /// incidents. Process bytes are now treated as corroboration when present
+    /// and never as the gate; the accusation is made at cgroup level, from
+    /// `io.stat`, which is readable. A process we can see moving real data is
+    /// still worth naming.
+    fn role_from(bytes: u64, blocked_pct: f64) -> Role {
+        let mib = bytes as f64 / 1_048_576.0;
+        if mib >= 1.0 && blocked_pct < 50.0 {
+            Role::Cause
+        } else if blocked_pct >= 50.0 && mib < 1.0 {
+            Role::Victim
+        } else {
+            Role::Active
         }
     }
 }
@@ -99,6 +87,9 @@ pub struct Incident {
     pub warnings: Vec<Warning>,
     /// Processes inside the worst cgroup, if a drill-down ran.
     pub culprits: Vec<Culprit>,
+    /// Cgroups that moved bytes during the window. This is where the cause
+    /// comes from; `culprits` only refines it when the processes are ours.
+    pub causes: Vec<Cause>,
 }
 
 impl Incident {
@@ -110,6 +101,7 @@ impl Incident {
             stalls: report.stalls.clone(),
             warnings: report.warnings.clone(),
             culprits: Vec::new(),
+            causes: report.causes.clone(),
         }
     }
 
@@ -216,7 +208,7 @@ impl Incident {
                     jstr(&c.comm),
                     c.blocked_pct,
                     c.bytes,
-                    c.role.describe()
+                    c.role.as_str()
                 )
             })
             .collect();
@@ -236,6 +228,7 @@ impl Incident {
     fn to_report(&self) -> Report {
         Report {
             window_usec: self.window_usec,
+            causes: self.causes.clone(),
             stalls: self.stalls.clone(),
             warnings: self.warnings.clone(),
         }
@@ -361,6 +354,7 @@ mod tests {
             at_unix: 1000,
             window_usec: 1_000_000,
             woke_on: vec!["io".into()],
+            causes: Vec::new(),
             stalls: vec![stall("ghostty", 93.0, 3100)],
             warnings: vec![],
             culprits: vec![],
@@ -435,6 +429,7 @@ mod tests {
             at_unix: 1,
             window_usec: 1000,
             woke_on: vec![],
+            causes: Vec::new(),
             stalls: vec![],
             warnings: vec![],
             culprits: vec![],

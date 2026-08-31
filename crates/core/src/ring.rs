@@ -127,6 +127,10 @@ impl Ring {
         Report {
             window_usec: total_window,
             stalls,
+            // History aggregates pressure across frames; byte deltas are not
+            // retained per frame, so an aggregated report carries no causes
+            // rather than a fabricated total.
+            causes: Vec::new(),
             warnings: Vec::new(),
         }
     }

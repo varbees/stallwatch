@@ -8,9 +8,10 @@
 //! answer is always "user.slice", which tells nobody anything.
 
 use crate::cgroup;
+use crate::iostat::{self, IoBytes};
 use crate::psi::Resource;
 use crate::psi::Snapshot;
-use crate::{MAX_STALLS, MIN_REPORTABLE_PCT, Stall};
+use crate::{Cause, MAX_CAUSES, MAX_STALLS, MIN_CAUSE_BYTES, MIN_REPORTABLE_PCT, Stall};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -103,21 +104,28 @@ fn is_responsible_naive(cg: &Path, delta: u64, deltas: &HashMap<PathBuf, u64>) -
     true
 }
 
-/// Sample twice over `window` and return the responsible stalls, worst first.
+/// Sample twice over `window` and return the responsible stalls and the
+/// cgroups that moved bytes, each worst-first.
 ///
 /// Returns the measured window length alongside, because sampling thousands of
 /// cgroups takes real time and percentages computed against the *requested*
 /// duration would be quietly wrong.
-pub fn collect(window: Duration) -> (Vec<Stall>, u64) {
+///
+/// Both halves are collected from the same pair of samples. Reading bytes in a
+/// second pass would measure a different window than the pressure it is meant
+/// to be paired with, and the whole point is the comparison.
+pub fn collect(window: Duration) -> (Vec<Stall>, Vec<Cause>, u64) {
     let cgroups = cgroup::all();
 
     let t0 = Instant::now();
     let first = cgroup::sample(&cgroups);
+    let first_io = iostat::sample(&cgroups);
     std::thread::sleep(window);
     let second = cgroup::sample(&cgroups);
+    let second_io = iostat::sample(&cgroups);
     let elapsed_us = t0.elapsed().as_micros() as u64;
     if elapsed_us == 0 {
-        return (Vec::new(), 0);
+        return (Vec::new(), Vec::new(), 0);
     }
 
     let mut stalls = Vec::new();
@@ -165,7 +173,78 @@ pub fn collect(window: Duration) -> (Vec<Stall>, u64) {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     stalls.truncate(MAX_STALLS);
-    (stalls, elapsed_us)
+
+    let causes = collect_causes(&first_io, &second_io, &first, &second, elapsed_us);
+    (stalls, causes, elapsed_us)
+}
+
+/// Rank the cgroups that actually moved bytes, and pair each with its own IO
+/// pressure so a cause can be told from a victim.
+///
+/// `io.stat` is recursive in cgroup v2 — verified against a live tree, where
+/// `/system.slice` reported 739.3 GB written and its `systemd-journald.service`
+/// child 736.8 GB of that. So byte deltas need exactly the same hierarchical
+/// de-duplication as pressure deltas, or every report blames `system.slice`.
+fn collect_causes(
+    first_io: &HashMap<PathBuf, IoBytes>,
+    second_io: &HashMap<PathBuf, IoBytes>,
+    first: &HashMap<PathBuf, Snapshot>,
+    second: &HashMap<PathBuf, Snapshot>,
+    elapsed_us: u64,
+) -> Vec<Cause> {
+    let kind = Resource::Io.primary_kind();
+
+    let mut byte_deltas: HashMap<PathBuf, u64> = HashMap::new();
+    let mut detail: HashMap<PathBuf, IoBytes> = HashMap::new();
+    for (cg, after) in second_io {
+        // Appeared mid-window: its counter starts from an unknown base.
+        let Some(before) = first_io.get(cg) else {
+            continue;
+        };
+        let d = after.delta(*before);
+        if d.total() == 0 {
+            continue;
+        }
+        byte_deltas.insert(cg.clone(), d.total());
+        detail.insert(cg.clone(), d);
+    }
+
+    let responsibility = Responsibility::new(&byte_deltas);
+
+    let mut causes: Vec<Cause> = byte_deltas
+        .iter()
+        .filter(|(cg, bytes)| {
+            **bytes >= MIN_CAUSE_BYTES && responsibility.is_responsible(cg, **bytes)
+        })
+        .map(|(cg, _)| {
+            let d = detail[cg];
+            // The cgroup's own IO stall over the same window. Absent from
+            // either sample means unknown, which is reported as zero pressure
+            // rather than guessed — a cgroup with no pressure file genuinely
+            // has no measured stall.
+            let pressure_pct = match (first.get(cg), second.get(cg)) {
+                (Some(b), Some(a)) => {
+                    let before = b.get(Resource::Io).total_for(kind);
+                    let after = a.get(Resource::Io).total_for(kind);
+                    after.saturating_sub(before) as f64 / elapsed_us as f64 * 100.0
+                }
+                _ => 0.0,
+            };
+            Cause {
+                unit: cgroup::friendly_name(cg),
+                cgroup: cg.to_string_lossy().into_owned(),
+                read_bytes: d.read,
+                write_bytes: d.write,
+                discard_bytes: d.discard,
+                pressure_pct,
+                role: Cause::classify(d.total(), pressure_pct),
+            }
+        })
+        .collect();
+
+    causes.sort_by_key(|c| std::cmp::Reverse(c.bytes()));
+    causes.truncate(MAX_CAUSES);
+    causes
 }
 
 #[cfg(test)]

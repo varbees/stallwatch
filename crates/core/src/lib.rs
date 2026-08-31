@@ -43,6 +43,7 @@ pub mod cgroup;
 pub mod config;
 pub mod filter;
 pub mod incident;
+pub mod iostat;
 pub mod ipc;
 pub mod json;
 pub mod metrics;
@@ -89,6 +90,95 @@ pub struct Stall {
     pub peak_pct: f64,
 }
 
+/// Whether a cgroup was doing the work or suffering it.
+///
+/// Pressure alone cannot express this. It measures who was *blocked*, so a
+/// process saturating a queue registers almost no pressure while the terminal
+/// it starved registers 90%. Reporting pressure alone names the casualty.
+/// Pairing pressure with [`iostat`] bytes is what separates the two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    /// Moved real bytes and was barely blocked: this is the one to act on.
+    Cause,
+    /// Was blocked and moved nothing: collateral damage.
+    Victim,
+    /// Both, or neither clearly. Named honestly rather than forced into a
+    /// verdict the evidence does not support.
+    Active,
+}
+
+impl Role {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Cause => "cause",
+            Role::Victim => "victim",
+            Role::Active => "active",
+        }
+    }
+}
+
+impl std::fmt::Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A cgroup that moved block-layer bytes during the window.
+///
+/// The complement of [`Stall`]. A stall says who was frozen; this says who was
+/// working. The culprit is usually in this list and absent from that one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cause {
+    pub unit: String,
+    pub cgroup: String,
+    pub read_bytes: u64,
+    pub write_bytes: u64,
+    /// Discard (TRIM) bytes, reported separately because they are kernel-side
+    /// cleanup rather than work the cgroup can be asked to stop doing.
+    pub discard_bytes: u64,
+    /// This cgroup's *own* IO stall. Low here alongside high bytes is the
+    /// signature of a cause; high here with no bytes is a victim.
+    pub pressure_pct: f64,
+    pub role: Role,
+}
+
+impl Cause {
+    pub fn bytes(&self) -> u64 {
+        self.read_bytes.saturating_add(self.write_bytes)
+    }
+
+    /// Can this cgroup be *named* as the thing to go and deal with?
+    ///
+    /// The root cgroup aggregates everything on the machine, so it always has
+    /// the largest byte count and is never an answer — "the whole system wrote
+    /// 108 MiB" tells a person nothing they can act on. It stays in the list as
+    /// context, because a large root figure with small children is itself a
+    /// finding (the IO is kernel-side, or in cgroups with no `io.stat`), but it
+    /// is never the accusation.
+    pub fn is_nameable(&self) -> bool {
+        self.cgroup != cgroup::ROOT
+    }
+
+    /// Classify from evidence.
+    ///
+    /// Thresholds are deliberately asymmetric. A cgroup must move real bytes
+    /// *and* be mostly unblocked to be accused; anything ambiguous is
+    /// [`Role::Active`], which says "present, verdict unsupported" rather than
+    /// inventing one. The previous version of this rule read process bytes
+    /// from `/proc/<pid>/io`, which is unreadable for other users' processes —
+    /// so the cause branch never executed once across 520,155 real incidents.
+    pub fn classify(bytes: u64, pressure_pct: f64) -> Role {
+        let enough = bytes >= MIN_CAUSE_BYTES;
+        if enough && pressure_pct < CAUSE_MAX_PRESSURE_PCT {
+            Role::Cause
+        } else if !enough && pressure_pct >= CAUSE_MAX_PRESSURE_PCT {
+            Role::Victim
+        } else {
+            Role::Active
+        }
+    }
+}
+
 /// The result of one observation window.
 #[derive(Clone, Debug, Default)]
 pub struct Report {
@@ -98,6 +188,11 @@ pub struct Report {
     pub window_usec: u64,
     /// Responsible units, worst first, capped at [`MAX_STALLS`].
     pub stalls: Vec<Stall>,
+    /// Cgroups that moved bytes during the window, biggest first.
+    ///
+    /// Separate from `stalls` because the culprit is usually not stalled at
+    /// all — that is the entire reason a pressure-only report misleads.
+    pub causes: Vec<Cause>,
     /// System conditions that explain stalls the pressure numbers cannot.
     pub warnings: Vec<Warning>,
 }
@@ -105,6 +200,20 @@ pub struct Report {
 /// Ignore anything under this share of the window. Below ~1% is indistinguishable
 /// from scheduling noise on an idle desktop and only adds clutter.
 pub const MIN_REPORTABLE_PCT: f64 = 1.0;
+
+/// Bytes a cgroup must move before it can be called a cause.
+///
+/// Below a mebibyte is indistinguishable from a config read or a log line on
+/// any real desktop, and accusing something of stalling the machine over 40 KiB
+/// is how a diagnostic loses a user's trust permanently.
+pub const MIN_CAUSE_BYTES: u64 = 1024 * 1024;
+
+/// A cause must be *mostly unblocked*. Above this it is competing for the
+/// device too, and calling it a cause overstates what the evidence supports.
+pub const CAUSE_MAX_PRESSURE_PCT: f64 = 50.0;
+
+/// Cap on reported causes, for the same reason as [`MAX_STALLS`].
+pub const MAX_CAUSES: usize = 10;
 
 /// Cap on reported stalls. A human reading a diagnostic wants the culprits, not
 /// a census.
@@ -115,10 +224,11 @@ pub const MAX_STALLS: usize = 10;
 /// Blocks for `window`. Cost is two passes over the cgroup tree plus a handful
 /// of small sysfs reads — microseconds of CPU either side of the sleep.
 pub fn observe(window: Duration) -> Report {
-    let (stalls, window_usec) = attribution::collect(window);
+    let (stalls, causes, window_usec) = attribution::collect(window);
     Report {
         window_usec,
         stalls,
+        causes,
         warnings: pathology::scan(),
     }
 }
@@ -156,6 +266,21 @@ impl Report {
                 st.pressure_pct,
                 st.peak_pct,
                 if i + 1 == self.stalls.len() { "" } else { "," }
+            ));
+        }
+        s.push_str("  ],\n  \"causes\": [\n");
+        for (i, c) in self.causes.iter().enumerate() {
+            s.push_str(&format!(
+                "    {{\"unit\": {}, \"cgroup\": {}, \"read_bytes\": {}, \"write_bytes\": {}, \
+                 \"discard_bytes\": {}, \"pressure_pct\": {:.2}, \"role\": \"{}\"}}{}\n",
+                json_str(&c.unit),
+                json_str(&c.cgroup),
+                c.read_bytes,
+                c.write_bytes,
+                c.discard_bytes,
+                c.pressure_pct,
+                c.role,
+                if i + 1 == self.causes.len() { "" } else { "," }
             ));
         }
         s.push_str("  ],\n  \"warnings\": [\n");
@@ -209,10 +334,27 @@ impl Report {
                 )
             })
             .collect();
+        let causes: Vec<String> = self
+            .causes
+            .iter()
+            .map(|c| {
+                format!(
+                    r#"{{"unit":{},"cgroup":{},"read_bytes":{},"write_bytes":{},"discard_bytes":{},"pressure_pct":{:.2},"role":"{}"}}"#,
+                    json_str(&c.unit),
+                    json_str(&c.cgroup),
+                    c.read_bytes,
+                    c.write_bytes,
+                    c.discard_bytes,
+                    c.pressure_pct,
+                    c.role
+                )
+            })
+            .collect();
         format!(
-            r#"{{"window_usec":{},"stalls":[{}],"warnings":[{}]}}"#,
+            r#"{{"window_usec":{},"stalls":[{}],"causes":[{}],"warnings":[{}]}}"#,
             self.window_usec,
             stalls.join(","),
+            causes.join(","),
             warnings.join(",")
         )
     }
@@ -258,6 +400,59 @@ impl Report {
             o.push_str(&format!("\n  worst cgroup: {}\n", self.stalls[0].cgroup));
         }
 
+        // Who was doing the work. This is the half a pressure-only report
+        // cannot show, and the half the reader actually needs: the worst-hit
+        // unit above is usually the casualty.
+        //
+        // Rank on bytes, not on role. A process saturating a device is itself
+        // blocked once the device is saturated — that is what saturation means
+        // — so gating the headline on `role == Cause` hides the biggest writer
+        // exactly when it matters most. Measured: a `dd` writing 1.5 GiB was
+        // classified `Active` because its own fsync blocked it, and a 21 MiB
+        // journald write took the headline. Role is reported as nuance.
+        if let Some(top) = self.causes.iter().find(|c| c.is_nameable()) {
+            let qualifier = match top.role {
+                Role::Cause => format!("and was barely blocked itself ({:.0}%)", top.pressure_pct),
+                Role::Active => format!(
+                    "and was contended too ({:.0}%), so it is competing rather than simply winning",
+                    top.pressure_pct
+                ),
+                Role::Victim => {
+                    "but was mostly blocked, so it is likely a casualty too".to_string()
+                }
+            };
+            o.push_str(&format!(
+                "\n  most of the IO: {} moved {} {}\n",
+                top.unit,
+                bytes_phrase(top.bytes()),
+                qualifier
+            ));
+            let others: Vec<&Cause> = self
+                .causes
+                .iter()
+                .filter(|c| c.cgroup != top.cgroup && c.is_nameable())
+                .take(2)
+                .collect();
+            if !others.is_empty() {
+                let names: Vec<String> = others
+                    .iter()
+                    .map(|c| format!("{} ({})", c.unit, bytes_phrase(c.bytes())))
+                    .collect();
+                o.push_str(&format!("  also moving data: {}\n", names.join(", ")));
+            }
+            // A root figure much larger than anything nameable means the work
+            // is happening where we cannot attribute it. Say so plainly rather
+            // than letting the reader assume the named unit is the whole story.
+            if let Some(root) = self.causes.iter().find(|c| !c.is_nameable())
+                && root.bytes() > top.bytes().saturating_mul(2)
+            {
+                o.push_str(&format!(
+                    "  system-wide total was {}, so most of this is kernel-side or in\n                       cgroups with no io.stat — not attributable to a unit.\n",
+                    bytes_phrase(root.bytes())
+                ));
+            }
+        }
+
         for w in &self.warnings {
             let marker = match w.severity {
                 Severity::Critical => "!!",
@@ -268,6 +463,21 @@ impl Report {
             o.push_str(&format!("\n  {marker} {}{tag}: {}\n", w.source, w.message));
         }
         o
+    }
+}
+
+/// Render a byte count the way a person says it out loud.
+pub fn bytes_phrase(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    let b = bytes as f64;
+    if b >= KIB * KIB * KIB {
+        format!("{:.1} GiB", b / (KIB * KIB * KIB))
+    } else if b >= KIB * KIB {
+        format!("{:.0} MiB", b / (KIB * KIB))
+    } else if b >= KIB {
+        format!("{:.0} KiB", b / KIB)
+    } else {
+        format!("{bytes} B")
     }
 }
 
@@ -294,6 +504,141 @@ fn json_str(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cause(unit: &str, cgroup: &str, bytes: u64, pressure: f64) -> Cause {
+        Cause {
+            unit: unit.into(),
+            cgroup: cgroup.into(),
+            read_bytes: 0,
+            write_bytes: bytes,
+            discard_bytes: 0,
+            pressure_pct: pressure,
+            role: Cause::classify(bytes, pressure),
+        }
+    }
+
+    #[test]
+    fn classify_needs_real_bytes_and_an_unblocked_mover() {
+        let mib = 1024 * 1024;
+        assert_eq!(Cause::classify(5 * mib, 10.0), Role::Cause);
+        assert_eq!(Cause::classify(0, 90.0), Role::Victim);
+        // Moving data AND blocked: competing, not clearly at fault.
+        assert_eq!(Cause::classify(5 * mib, 90.0), Role::Active);
+        // Neither: no verdict.
+        assert_eq!(Cause::classify(0, 10.0), Role::Active);
+    }
+
+    #[test]
+    fn a_trickle_is_never_a_cause() {
+        // 40 KiB is a config read, not a reason your machine froze.
+        assert_ne!(Cause::classify(40 * 1024, 0.0), Role::Cause);
+    }
+
+    #[test]
+    fn the_root_cgroup_is_never_nameable() {
+        assert!(!cause("whole system", cgroup::ROOT, 1 << 30, 5.0).is_nameable());
+        assert!(
+            cause(
+                "journald",
+                "/sys/fs/cgroup/system.slice/x.service",
+                1 << 20,
+                5.0
+            )
+            .is_nameable()
+        );
+    }
+
+    #[test]
+    fn the_headline_names_the_biggest_mover_even_when_it_is_contended() {
+        // Regression: a dd writing 1.5 GiB was classified Active because its
+        // own fsync blocked it, so a 21 MiB journald write took the headline.
+        // Saturation blocks the saturator; ranking must be on bytes.
+        let r = Report {
+            window_usec: 1_000_000,
+            stalls: vec![],
+            causes: vec![
+                cause(
+                    "bigwriter",
+                    "/sys/fs/cgroup/app.slice/big.scope",
+                    1_500 * 1024 * 1024,
+                    90.0,
+                ),
+                cause(
+                    "systemd-journald",
+                    "/sys/fs/cgroup/system.slice/j.service",
+                    21 * 1024 * 1024,
+                    11.0,
+                ),
+            ],
+            warnings: vec![],
+        };
+        let text = r.to_text();
+        assert!(text.contains("bigwriter"), "{text}");
+        assert!(text.contains("contended too"), "{text}");
+        let head = text.find("bigwriter").unwrap();
+        let other = text.find("systemd-journald").unwrap();
+        assert!(head < other, "biggest mover must lead:\n{text}");
+    }
+
+    #[test]
+    fn root_never_takes_the_headline_but_is_reported_as_context() {
+        let r = Report {
+            window_usec: 1_000_000,
+            stalls: vec![],
+            causes: vec![
+                cause(
+                    "whole system (root cgroup)",
+                    cgroup::ROOT,
+                    500 * 1024 * 1024,
+                    40.0,
+                ),
+                cause(
+                    "journald",
+                    "/sys/fs/cgroup/system.slice/j.service",
+                    10 * 1024 * 1024,
+                    5.0,
+                ),
+            ],
+            warnings: vec![],
+        };
+        let text = r.to_text();
+        assert!(text.contains("most of the IO: journald"), "{text}");
+        assert!(
+            text.contains("kernel-side"),
+            "root context missing:\n{text}"
+        );
+    }
+
+    #[test]
+    fn causes_reach_both_json_renderers() {
+        let r = Report {
+            window_usec: 1_000_000,
+            stalls: vec![],
+            causes: vec![cause(
+                "journald",
+                "/sys/fs/cgroup/system.slice/j.service",
+                2 * 1024 * 1024,
+                5.0,
+            )],
+            warnings: vec![],
+        };
+        for j in [r.to_json(), r.to_json_compact()] {
+            assert!(j.contains("\"causes\""), "{j}");
+            assert!(
+                j.contains("\"role\": \"cause\"") || j.contains("\"role\":\"cause\""),
+                "{j}"
+            );
+            assert!(j.contains("2097152"), "{j}");
+        }
+    }
+
+    #[test]
+    fn bytes_phrase_reads_like_a_person() {
+        assert_eq!(bytes_phrase(512), "512 B");
+        assert_eq!(bytes_phrase(2048), "2 KiB");
+        assert_eq!(bytes_phrase(5 * 1024 * 1024), "5 MiB");
+        assert_eq!(bytes_phrase(3 * 1024 * 1024 * 1024), "3.0 GiB");
+    }
 
     #[test]
     fn json_escapes_systemd_backslash_encoding() {
@@ -326,6 +671,7 @@ mod tests {
                 peak_pct: 40.0,
             }],
             warnings: vec![],
+            causes: vec![],
         };
         let j = r.to_json();
         assert!(j.contains("\"resource\": \"io\""), "{j}");

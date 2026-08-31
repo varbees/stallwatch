@@ -222,7 +222,8 @@ fn start_trigger_capture(
             // Sample across a short window while the stall is still happening.
             // The kernel rate-limits to one notification per window, so this
             // cannot spin even on a permanently stalled machine.
-            let (stalls, window_usec) = stallwatch_core::attribution::collect(capture_window);
+            let (stalls, causes, window_usec) =
+                stallwatch_core::attribution::collect(capture_window);
 
             // Drill while the stall is still live. This is the only moment the
             // responsible process can be caught; by the time anyone asks, it
@@ -268,6 +269,7 @@ fn start_trigger_capture(
                 stalls: stalls.clone(),
                 warnings: stallwatch_core::pathology::scan(),
                 culprits,
+                causes,
             };
             append_incident(&incident);
             fire_rules(&rules, &incident);
@@ -537,6 +539,7 @@ fn handle(stream: UnixStream, ring: Arc<Mutex<Ring>>) {
                 Some(f) => stallwatch_core::Report {
                     window_usec: f.window_usec,
                     stalls: f.stalls.clone(),
+                    causes: Vec::new(),
                     warnings: Vec::new(),
                 },
                 None => stallwatch_core::Report::default(),

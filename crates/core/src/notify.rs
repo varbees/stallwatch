@@ -207,6 +207,7 @@ mod tests {
             }],
             warnings: vec![],
             culprits: vec![],
+            causes: vec![],
         }
     }
 
@@ -389,6 +390,7 @@ mod tests {
             stalls: vec![],
             warnings: vec![],
             culprits: vec![],
+            causes: vec![],
         };
         assert!(n.consider(&empty, 100).is_none());
     }

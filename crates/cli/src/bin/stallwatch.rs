@@ -433,5 +433,7 @@ fn parse_incident(line: &str) -> Option<stallwatch_core::incident::Incident> {
         stalls,
         warnings,
         culprits,
+        // Historic lines predate cause recording; absent is honest.
+        causes: Vec::new(),
     })
 }
