@@ -67,7 +67,7 @@ jobs:
       # copies of a script that installs binaries is exactly the kind of thing
       # that silently drifts, so it is a build failure rather than a habit.
       - name: served copy is identical
-        run: diff install.sh site/public/install.sh
+        run: diff install.sh site/public/tools/stallwatch/install.sh
 
       - name: shellcheck
         run: shellcheck install.sh

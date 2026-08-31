@@ -79,15 +79,15 @@ pub fn human_name(unit: &str) -> String {
 
     // A reverse-DNS id with no entry installed still reads better as its last
     // component than as the whole string: `org.videolan.VLC` -> `VLC`.
-    if base.contains('.') && !base.contains(' ') {
-        if let Some(last) = base.rsplit('.').next()
-            && last.len() > 1
-            && last.chars().next().is_some_and(|c| c.is_alphabetic())
-        {
-            let mut chars = last.chars();
-            let first = chars.next().unwrap().to_uppercase().to_string();
-            return format!("{first}{}", chars.as_str());
-        }
+    if base.contains('.')
+        && !base.contains(' ')
+        && let Some(last) = base.rsplit('.').next()
+        && last.len() > 1
+        && last.chars().next().is_some_and(|c| c.is_alphabetic())
+    {
+        let mut chars = last.chars();
+        let first = chars.next().unwrap().to_uppercase().to_string();
+        return format!("{first}{}", chars.as_str());
     }
     unit.to_string()
 }
