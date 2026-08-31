@@ -136,16 +136,63 @@ configurable Linux tool is not knowing which file won.
 
 ## Build order
 
-1. **Filter language.** Parser plus evaluator over the existing `Stall` fields.
-   Everything downstream consumes it. Zero deps, lives in core.
-2. **`stallwatch why`.** The sentence. Needs the incident model from DIRECTION.
-3. **Config file and rules engine.** XDG layering, `--explain` resolution.
-4. **Notifications.** The moment it stops being a tool you run and becomes one
-   that tells you.
-5. **Workspace split** into core/cli/tui once the TUI is real work.
-6. **TUI.** Incident browser first, live view last.
-7. **`libstallwatch` C ABI.** The compounding play: htop already reads PSI and
-   already parses cgroups and joins them nowhere.
+1. ~~**Filter language.**~~ shipped
+2. ~~**`stallwatch why`.**~~ shipped
+3. ~~**Config file and rules engine.**~~ shipped, with `config --explain`
+4. ~~**Notifications.**~~ shipped, then rebuilt — see below
+5. ~~**Workspace split** into core/cli~~ shipped
+6. **TUI.** Incident browser first, live view last. Not started.
+7. **`libstallwatch` C ABI.** Not started.
+
+## What the first month of real use corrected
+
+Written after running the thing continuously on a daily driver for 30 days and
+then reading its own 520,155 recorded incidents.
+
+**The cause branch had never executed.** `Role::Cause` required bytes from
+`/proc/<pid>/io`, which is unreadable for any process you do not own — and the
+processes that stall a machine are kernel threads and root daemons. Zero causes
+named in 29 days, while every individual report looked complete. Fixed by
+reading the cgroup's own `io.stat`, which is world-readable and sits beside the
+`io.pressure` already being read. Attribution is now unit-level, which is the
+granularity a person acts on anyway.
+
+**The notification policy was never tested against reality.** It would have sent
+2,489 notifications over that month. It reported one 400ms capture of a
+continuous condition, quoted the sampling window as though it were a freeze
+duration, named a systemd unit rather than an application, and accused the
+stalled unit rather than the one moving data. Rebuilt around episodes: 38
+notifications over the same corpus.
+
+**Nothing checked whether the evidence existed.** That is the failure that
+allowed the other two to run for a month. `stallwatch doctor` now probes every
+capability and states what each missing one costs; the daemon logs it at start.
+
+The general lesson, which is not specific to this project: **a test suite that
+only asserts against data the test itself fabricated proves self-consistency,
+not truth.** 132 tests passed throughout. The bug was found by reading what the
+tool had actually written to disk over a month, not by any of them.
+
+## Directions closed by research
+
+Recorded so they are not re-opened on a hunch.
+
+- **Kubernetes / fleet PSI collection.** Kubernetes ships PSI at node, pod and
+  container granularity, stable and locked on since v1.36 (first in v1.33). The
+  platform does natively what an exporter here would offer, better placed.
+- **The desktop notifier as a product.** `cdown/psi-notify` is the same idea by
+  a Meta systemd maintainer, packaged across Debian/Fedora/EPEL/Ubuntu/Arch:
+  242 stars after six years and no revenue attempt. Also `btop` 34k stars,
+  `bottom` 14k, `htop` 8k — all $0.
+- **A security pivot.** Attribution is the whole of a security product, and
+  attribution without privilege is exactly what the constraints here forbid.
+  Falco, Tetragon and Sysdig all run privileged because that is the job.
+
+One finding worth publishing separately: `/proc/pressure` is not namespaced and
+is absent from containerd's `MaskedPaths`, so a resource-limited container reads
+the host's counters verbatim. `/sys/devices/virtual/powercap` is on that list,
+masked for exactly this class of leak. That is a one-line upstream fix and a
+writeup, not a product.
 
 ## What would make this half-arsed, and therefore what to refuse
 

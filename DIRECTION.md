@@ -69,26 +69,25 @@ version of theirs.
 
 ## Build order
 
-1. **Trigger-driven daemon.** Replace the sampling loop with a blocked trigger.
-   Wake, capture, record, sleep. Keep polling only as a fallback when triggers
-   are unavailable.
-2. **Incident model.** A stall becomes a first-class record with a timestamp,
-   the culprit, the drill-down and the pathology, not a row in a ring buffer.
-3. **`stallwatch why`.** Read incidents back in plain language.
-4. **Desktop notification on capture.** This is what makes someone tell a
-   friend: their machine froze and something told them why, unprompted.
-5. **C ABI.** `libstallwatch` with a header, so the C and C++ monitors can
-   adopt attribution without a Rust toolchain.
-6. **TUI, last.** As the browser for recorded incidents, not a live dashboard.
+1. ~~**Trigger-driven daemon.**~~ shipped. Verified: system-wide PSI triggers
+   register unprivileged; per-cgroup ones return `EACCES`, so capture is woken
+   system-wide and attributed afterwards.
+2. ~~**Incident model.**~~ shipped
+3. ~~**`stallwatch why`.**~~ shipped
+4. ~~**Desktop notification on capture.**~~ shipped, then rebuilt around
+   episodes after the first version proved it would send 2,489 notices a month
+5. **C ABI.** Not started.
+6. **TUI, last.** Not started.
 
-## Known gaps to close first
+## Gaps closed, and what replaced them
 
-- `cgroup_disable=pressure` removes every per-cgroup file while leaving
-  `/proc/pressure` intact. Today that degrades silently to "no stalls found",
-  which is the one failure mode a diagnostic must never have.
-- `/proc/pressure/irq` exists on recent kernels and nothing reads it, this tool
-  included. IRQ storms freeze desktops.
-- Triggers need a polling fallback for kernels or containers that refuse them.
+- ~~`cgroup_disable=pressure` degrades silently to "no stalls found"~~ —
+  `stallwatch doctor` now reports per-cgroup pressure readability explicitly,
+  along with every other capability the engine depends on.
+- **`/proc/pressure/irq` is still unread.** IRQ storms freeze desktops and
+  nothing here looks at it.
+- ~~Triggers need a polling fallback~~ — present, and the daemon now says which
+  mode it is in rather than only claiming the good one.
 
 ## The honest risk
 

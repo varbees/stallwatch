@@ -8,7 +8,7 @@
 <link rel="canonical" href="https://antharmaya.com/tools/stallwatch/">
 <meta property="og:type" content="website">
 <meta property="og:title" content="stallwatch — name the unit that froze your Linux box">
-<meta property="og:description" content="Your machine froze. Every monitor says it's fine. stallwatch reads per-cgroup Pressure Stall Information and names the unit, then the process inside it.">
+<meta property="og:description" content="Your machine froze. Every monitor says it's fine. stallwatch reads per-cgroup Pressure Stall Information and names the systemd unit that stalled you — and the one that caused it.">
 <meta property="og:url" content="https://antharmaya.com/tools/stallwatch/">
 <meta property="og:image" content="https://antharmaya.com/tools/stallwatch/og.png">
 <meta property="og:image:width" content="1200">
@@ -203,8 +203,8 @@ footer a{color:var(--dim)}
     <p class="lede">
       Linux has measured how long tasks spend <em>blocked</em> since 4.20, and it writes
       that number into every cgroup on the system. Almost nothing reads it.
-      stallwatch does, and names the systemd unit &mdash; then the process inside it &mdash;
-      that stopped your machine.
+      stallwatch does, and names the systemd unit that stopped your machine
+      &mdash; and, separately, the one that was actually moving the data.
     </p>
 
     <!-- Signature: the same ten seconds, read by two instruments. -->
@@ -267,26 +267,26 @@ footer a{color:var(--dim)}
   <div class="wrap">
     <div class="rule"><h2>what it tells you</h2></div>
     <figure>
-<pre><span class="p">$</span> stallwatch --processes
+<pre><span class="p">$</span> stallwatch
 
-Over the last 1.0s, these units stalled the system:
+Over the last 2.0s, these units stalled the system:
 
-    <span class="hi">83.5%</span>  io      com.mitchellh.ghostty  — frozen 1015ms waiting on io
-    <span class="hi">11.2%</span>  io      systemd-journald       — frozen  114ms waiting on io
-     2.0%  cpu     zen (flatpak)          — frozen   21ms waiting on cpu
+    <span class="hi">77.7%</span>  io      com.mitchellh.ghostty  — frozen 1569ms waiting on io
+    <span class="hi">12.9%</span>  io      systemd-journald       — frozen  261ms waiting on io
+     7.5%  io      backup.service         — frozen  152ms waiting on io
 
   worst cgroup: /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/
                 app.slice/app-com.mitchellh.ghostty.service
 
-  inside ghostty-surface-transient:
-    <span class="w">active   83% blocked  dd [214461]  ·  5 MiB of disk IO</span>
+  <span class="w">most of the IO: backup.service moved 34 MiB and was barely blocked itself (8%)</span>
+  also moving data: systemd-journald (27 MiB)
 
    <span class="c">· btrfs [transient]: working through an async discard (TRIM) backlog:
-     131410 extents / 3.3 GiB still queued after a large delete. This runs in
+     65150 extents / 1.1 GiB still queued after a large delete. This runs in
      the kernel, so the disk looks busy while no process shows IO delay. It
      clears on its own — do not go hunting for a runaway program.</span>
 </pre>
-      <figcaption>Real output, not a mockup — a <code>dd</code> saturating a real NVMe, diagnosed live.</figcaption>
+      <figcaption>Real output, not a mockup — a real NVMe saturated by a real writer, diagnosed live. The terminal is stalled 77% of the window and moving no data: it is the casualty. The last two lines name what stopped it, at systemd-unit granularity.</figcaption>
     </figure>
   </div>
 </section>
@@ -349,7 +349,7 @@ Over the last 1.0s, these units stalled the system:
     <ul class="items">
       <li>
         <h3>stallwatch</h3>
-        <p>One-second snapshot. <code>--processes</code> names the process, <code>--json</code> for machines, <code>--watch</code> to follow.</p>
+        <p>One-second snapshot. <code>--processes</code> drills into processes, <code>doctor</code> reports what this machine lets it see, <code>--json</code> for machines, <code>--watch</code> to follow.</p>
       </li>
       <li>
         <h3>stallwatchd &nbsp;·&nbsp; --since 30</h3>

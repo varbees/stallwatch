@@ -450,9 +450,10 @@ impl Report {
                 && root.bytes() > top.bytes().saturating_mul(2)
             {
                 o.push_str(&format!(
-                    "  system-wide total was {}, so most of this is kernel-side or in\n                       cgroups with no io.stat — not attributable to a unit.\n",
+                    "  system-wide total was {}, so most of this is kernel-side\n",
                     bytes_phrase(root.bytes())
                 ));
+                o.push_str("  or in cgroups with no io.stat — not attributable to a unit.\n");
             }
         }
 

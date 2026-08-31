@@ -13,20 +13,27 @@ cannot say on what; stallwatch names the unit, then the process inside it.*
 
 ```console
 $ stallwatch
-Over the last 1.0s, these units stalled the system:
+Over the last 2.0s, these units stalled the system:
 
-    84.6%  io      com.mitchellh.ghostty  — frozen 858ms waiting on io
-    11.2%  io      systemd-journald       — frozen 114ms waiting on io
-     2.0%  cpu     zen (flatpak)          — frozen  21ms waiting on cpu
+    77.7%  io      com.mitchellh.ghostty  — frozen 1569ms waiting on io
+    12.9%  io      systemd-journald       — frozen  261ms waiting on io
+     7.5%  io      backup.service         — frozen  152ms waiting on io
 
   worst cgroup: /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/
                 app.slice/app-com.mitchellh.ghostty.service
 
-   · btrfs [transient]: working through an async discard (TRIM) backlog: 131410
-     extents / 3.3 GiB still queued after a large delete. This runs in the kernel,
+  most of the IO: backup.service moved 34 MiB and was barely blocked itself (8%)
+  also moving data: systemd-journald (27 MiB)
+
+   · btrfs [transient]: working through an async discard (TRIM) backlog: 65150
+     extents / 1.1 GiB still queued after a large delete. This runs in the kernel,
      so the disk looks busy while no process shows IO delay. It clears on its own
-     — do not go hunting for a runaway program. Roughly 3 min at the 1000 IOPS limit.
+     — do not go hunting for a runaway program. Roughly 2 min at the 1000 IOPS limit.
 ```
+
+The last two lines are the ones nothing else prints. The terminal is stalled
+77% of the window and is moving no data: it is the casualty. The unit moving
+data while barely blocked is what stopped it.
 
 No privileges. No dependencies. A 432 KB binary, or 516 KB fully static. The
 daemon is optional and only needed for history.
@@ -88,35 +95,78 @@ stallwatch                    # one-second snapshot
 stallwatch --watch            # refresh until Ctrl-C
 stallwatch --window 3000      # three-second window
 stallwatch --json             # machine-readable
-stallwatch --processes        # name the process, not just the unit
+stallwatch --processes        # drill into processes inside the guilty cgroup
+stallwatch doctor             # what this machine lets it see
+stallwatch --version
 ```
 
-### Naming the process, not just the unit
+### Cause and victim
+
+Pressure measures who is **blocked**. A process saturating a queue is not itself
+waiting on it, so a report built only on pressure names the casualty every time.
+Separating the two needs a second measurement: bytes actually moved.
 
 ```console
-$ stallwatch --processes
-    83.5%  io      com.mitchellh.ghostty  — frozen 1015ms waiting on io
-
-  inside ghostty-surface-transient:
-    active   83% blocked  dd [214461]  ·  5 MiB of disk IO
+  most of the IO: backup.service moved 34 MiB and was barely blocked itself (8%)
 ```
 
-Two things this had to get right, both learned by being wrong first:
+That comes from `io.stat`, which sits in the same cgroup directory as the
+`io.pressure` above and is readable without privileges — including for
+root-owned services.
 
-**PSI blames the victim, not the cause.** It measures who is *blocked*. A `dd`
-saturating the disk sat in a sibling cgroup with a fraction of the pressure of
-the terminal it was starving — so drilling only the worst cgroup finds the
-casualty and misses the culprit. `--processes` probes the top few.
+**This is cgroup-level, not process-level, and that distinction is load-bearing.**
+An earlier version read `/proc/<pid>/io` to find the causing *process*. That file
+returns `EACCES` for any process you do not own, and the processes that stall a
+machine are kernel threads and root daemons — `kworker/*`, `systemd-journald`,
+`mount.*`, `irq/*`. So the cause branch was unreachable: across 520,155 incidents
+recorded on one desktop over 29 days it fired **zero times**, and every report
+looked confident and complete while it did so. The demo that shipped with it only
+worked because the `dd` in it belonged to the person running it.
 
-**D-state alone is not enough.** A task throttled by dirty-page writeback is
-counted as IO-stalled by PSI while showing state `S`. The terminal above
-registered 83% pressure with no process ever caught in `D`. Block-layer byte
-counters catch what state sampling cannot, so both are reported: high bytes with
-low blocking is causing the stall, high blocking with low bytes is suffering it.
+A cgroup is a systemd unit and a unit is what you act on, so unit-level
+attribution is the useful granularity anyway. `--processes` still drills into
+processes and still reports their bytes where they are readable — as
+corroboration, never as the thing the verdict depends on.
 
-`delayacct_blkio_ticks` would give exact blocking time, but it is off by default
-since 5.14 (`kernel.task_delayacct=0`) so it is used when present and never
-depended on.
+Two limits worth knowing:
+
+- **A short-lived culprit may only be attributable to its parent.** A transient
+  scope that exits mid-window is torn down and takes its `io.stat` with it, so
+  the bytes land on the enclosing slice — `all user apps` rather than the
+  command you ran. Sustained load attributes precisely; a one-second burst may
+  not.
+- **The root cgroup is never named as a cause.** It aggregates the machine, so
+  it always has the largest byte count and can never be acted on. When its total
+  is much larger than anything nameable, that is reported as its own finding:
+  the work is kernel-side, or in cgroups with no `io.stat`.
+
+`delayacct_blkio_ticks` would give exact per-process blocking time, but it is off
+by default since 5.14 (`kernel.task_delayacct=0`) so it is used when present and
+never depended on.
+
+### Checking what it can actually see
+
+The failure above was invisible for a month because nothing ever asked whether
+the evidence existed. `doctor` asks, and says what each answer costs:
+
+```console
+$ stallwatch doctor
+What stallwatch can and cannot see on this machine:
+
+  ✓ cgroup v2                  mounted at /sys/fs/cgroup
+  ✓ kernel PSI                 /proc/pressure present
+  ✓ per-cgroup pressure        186 of 186 cgroups expose io.pressure
+  ✓ per-cgroup io.stat         167 of 186 cgroups expose io.stat
+  ! /proc/<pid>/io             readable for 122 of 398 processes (31%)
+      Per-process byte evidence is unavailable for kernel threads and root
+      daemons. Cause attribution uses cgroup io.stat instead, which is
+      unit-level. This is expected, not a fault.
+  ! PSI triggers (per-cgroup)  refused: Permission denied — normal without privileges
+      Capture is woken by system-wide pressure and attributed afterwards, so a
+      stall confined to one cgroup may not wake it.
+```
+
+The daemon runs the same checks at startup and logs anything reduced.
 
 ### "What just happened?"
 
@@ -190,6 +240,13 @@ ships dozens of `io.systemd.*` Varlink services, so this is the direction the
 platform is already moving.
 
 ### Prometheus / SRE
+
+**Not a differentiator, and deliberately not the identity.** Kubernetes ships PSI
+metrics at node, pod and container granularity — `container_pressure_*` via the
+kubelet and cAdvisor — stable and locked on since v1.36, first available in
+v1.33. If you are running Kubernetes, that stream already exists and is better
+placed in the stack than anything here. This exporter is kept because it is
+cheap, already built, and useful on a machine that is not a cluster node.
 
 ```sh
 stallwatchd --metrics-listen 127.0.0.1:9836          # scrape http://…/metrics
@@ -273,23 +330,39 @@ host's values with no indication that they aren't its own.
 - **systemd naming.** Attribution works anywhere cgroup v2 does, but the
   human-readable names assume systemd's layout. On OpenRC/runit you get raw
   cgroup paths.
+- **Cause attribution is unit-level, not process-level.** See
+  [Cause and victim](#cause-and-victim). Per-process bytes are only readable for
+  your own processes, so they are corroboration, never the verdict.
+- **A culprit that exits mid-window may only be attributable to its parent.**
+  Its cgroup is torn down with it.
+- **Per-cgroup PSI triggers need privilege.** System-wide triggers work
+  unprivileged; `io.pressure` inside a cgroup returns `EACCES`. So capture is
+  woken by system-wide pressure and attributed afterwards, and a stall confined
+  to a single cgroup may not wake it at all. `stallwatch doctor` reports this.
+- **`frozen Nms` is bounded by the capture window.** The daemon samples for a
+  fixed window, so the figure says how much of *that window* was lost, not how
+  long a freeze lasted. Notifications deliberately do not quote it: across
+  520,209 recorded incidents only 3 ever exceeded one second, because the window
+  was 400ms.
 - **Per-process drill-down is a second window.** `--processes` cannot know which
   cgroup is guilty until the first pass finishes, so it samples again straight
   after. For a sustained stall that is fine; a one-off spike may be gone, and it
   says so rather than implying otherwise.
-- **No D-Bus yet.** The daemon speaks a Unix socket. D-Bus is the right
-  integration surface — it is what lets KRunner, GNOME and waybar consume this
-  without inheriting a Rust build dependency — but every Rust D-Bus crate is a
-  dependency, and zero dependencies is what keeps the engine reducible to a C
-  ABI. A D-Bus frontend will be another client of the same daemon.
-- **Thermal checks cannot see throttle counters**, which need root. Hence the deliberate caution above.
+- **No D-Bus.** The daemon speaks a Unix socket and Varlink. D-Bus would be
+  either a dependency or a large amount of hand-rolled protocol, and zero
+  dependencies is what keeps the engine reducible to a C ABI.
+- **Thermal checks cannot see throttle counters**, which need root. Hence the
+  deliberate caution above.
 
 ## Roadmap
 
 1. ~~Daemon with a ring buffer~~ — done
 2. ~~D-Bus interface~~ — solved with Varlink instead, at zero dependency cost
 3. ~~Per-process drill-down~~ — done
-4. More pathologies: zram/zswap saturation, ZFS ARC pressure, dm-thin exhaustion, NVMe SMART wear
+4. ~~Name the cause, not just the victim~~ — done, via cgroup `io.stat`
+5. ~~Self-diagnosis~~ — done, `stallwatch doctor`
+6. More pathologies: zram/zswap saturation, ZFS ARC pressure, dm-thin
+   exhaustion, NVMe SMART wear
 
 ## License
 
