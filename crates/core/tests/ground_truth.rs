@@ -21,7 +21,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -42,8 +42,17 @@ fn skip(why: &str) {
     println!("SKIP ground_truth: {why}");
 }
 
+/// These two tests share one cgroup — the test binary's own — and cargo runs
+/// them in parallel by default. The IO one then generates load while the quiet
+/// one asserts there is none, so the pair failed intermittently and passed on
+/// retry, which is the worst possible behaviour for a check meant to be
+/// believed. They are serialised rather than made tolerant, because a quiet
+/// system genuinely must not be accused of anything.
+static EXCLUSIVE: Mutex<()> = Mutex::new(());
+
 #[test]
 fn attribution_names_the_cgroup_that_actually_did_the_io() {
+    let _serial = EXCLUSIVE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(cg) = own_cgroup() else {
         return skip("cannot resolve own cgroup (not cgroup v2?)");
     };
@@ -148,6 +157,7 @@ fn attribution_names_the_cgroup_that_actually_did_the_io() {
 
 #[test]
 fn a_quiet_system_is_not_accused_of_anything() {
+    let _serial = EXCLUSIVE.lock().unwrap_or_else(|e| e.into_inner());
     // The complement, and the cheaper half of the same guarantee: a threshold
     // low enough to name a culprit during real IO must not manufacture one when
     // nothing is happening. Only asserts about *this* cgroup, because the rest
