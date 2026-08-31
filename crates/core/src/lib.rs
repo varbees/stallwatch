@@ -38,6 +38,7 @@
 
 use std::time::Duration;
 
+pub mod appname;
 pub mod attribution;
 pub mod cgroup;
 pub mod config;

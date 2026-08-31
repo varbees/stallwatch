@@ -26,16 +26,161 @@ use std::time::Duration;
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("--notify") => {
+            let Some(path) = args.get(1) else {
+                eprintln!("usage: replay --notify <incidents.jsonl>");
+                std::process::exit(2);
+            };
+            notify_policy(path);
+        }
         Some("--live") => {
             let n: usize = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(20);
             live(n);
         }
         Some(path) => corpus(path),
         None => {
-            eprintln!("usage: replay <incidents.jsonl> | replay --live [WINDOWS]");
+            eprintln!(
+                "usage: replay <incidents.jsonl> | replay --notify <file> | replay --live [N]"
+            );
             std::process::exit(2);
         }
     }
+}
+
+/// Replay the corpus through the real notifier and count what it would say.
+///
+/// Uses `Notifier::consider` itself rather than a model of it, because the
+/// entire question is what the shipped policy does to a real month of a real
+/// desktop — and the previous policy was chosen without ever asking that.
+fn notify_policy(path: &str) {
+    use stallwatch_core::notify::Notifier;
+
+    let Ok(f) = File::open(path) else {
+        eprintln!("replay: cannot open {path}");
+        std::process::exit(1);
+    };
+    let mut n = Notifier::default();
+    let mut incidents = 0u64;
+    let mut fired = 0u64;
+    let mut first = 0u64;
+    let mut last = 0u64;
+    let mut samples: Vec<String> = Vec::new();
+
+    for line in BufReader::new(f).lines().map_while(Result::ok) {
+        let Some(inc) = parse_incident(&line) else {
+            continue;
+        };
+        incidents += 1;
+        if first == 0 {
+            first = inc.at_unix;
+        }
+        last = inc.at_unix;
+        let at = inc.at_unix;
+        if let Some(notice) = n.consider(&inc, at) {
+            fired += 1;
+            if samples.len() < 4 {
+                samples.push(format!("{}\n      {}", notice.summary, notice.body));
+            }
+        }
+    }
+
+    let days = (last.saturating_sub(first)) as f64 / 86_400.0;
+    println!("Notification policy replayed over the recorded corpus");
+    println!("  incidents                     {incidents:>12}");
+    println!("  days covered                  {days:>12.1}");
+    println!("  notifications it would send   {fired:>12}");
+    if days > 0.0 {
+        println!(
+            "  per day                       {:>12.2}",
+            fired as f64 / days
+        );
+        println!(
+            "  per week                      {:>12.1}",
+            fired as f64 / days * 7.0
+        );
+    }
+    if !samples.is_empty() {
+        println!("\n  what the user would actually see:");
+        for s in &samples {
+            println!("    {s}");
+        }
+    }
+}
+
+/// Minimal reader for the recorded shape. Only the fields the policy consults.
+fn parse_incident(line: &str) -> Option<stallwatch_core::incident::Incident> {
+    use stallwatch_core::incident::Incident;
+    use stallwatch_core::{PsiKind, Resource, Severity, Stall, Warning};
+
+    let at_unix = field_u64(line, r#""at_unix":"#)?;
+    let window_usec = field_u64(line, r#""window_usec":"#).unwrap_or(400_000);
+    let delta_usec = field_u64(line, r#""delta_usec":"#).unwrap_or(0);
+    let pressure = field_f64(line, r#""pressure_pct":"#).unwrap_or(0.0);
+    let peak = field_f64(line, r#""peak_pct":"#).unwrap_or(pressure);
+    let unit = field_str(line, r#""unit":"#).unwrap_or_default();
+
+    // Warnings: only `transient` and `source` steer the policy.
+    let mut warnings = Vec::new();
+    let mut hay = line;
+    while let Some(i) = hay.find(r#""transient":"#) {
+        let rest = &hay[i + 12..];
+        let transient = rest.starts_with("true");
+        let source = field_str(&hay[..i], r#""source":"#).unwrap_or_else(|| "unknown".into());
+        warnings.push(Warning {
+            source,
+            severity: Severity::Note,
+            transient,
+            message: String::new(),
+        });
+        hay = rest;
+    }
+
+    Some(Incident {
+        at_unix,
+        window_usec,
+        woke_on: Vec::new(),
+        stalls: if unit.is_empty() {
+            Vec::new()
+        } else {
+            vec![Stall {
+                unit,
+                cgroup: String::new(),
+                resource: Resource::Io,
+                kind: PsiKind::Full,
+                delta_usec,
+                pressure_pct: pressure,
+                peak_pct: peak,
+            }]
+        },
+        warnings,
+        culprits: Vec::new(),
+        causes: Vec::new(),
+    })
+}
+
+fn field_u64(s: &str, key: &str) -> Option<u64> {
+    let i = s.find(key)? + key.len();
+    let rest = &s[i..];
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
+fn field_f64(s: &str, key: &str) -> Option<f64> {
+    let i = s.find(key)? + key.len();
+    let rest = &s[i..];
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-')
+        .unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
+fn field_str(s: &str, key: &str) -> Option<String> {
+    let i = s.find(key)? + key.len();
+    let rest = s[i..].strip_prefix('"')?;
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
 }
 
 /// What the recorded file contains. No re-attribution: see the module note.
