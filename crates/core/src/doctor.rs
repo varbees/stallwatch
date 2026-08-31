@@ -141,25 +141,38 @@ fn incident_log() -> Check {
         .unwrap_or(0);
     let total = live + old;
     let cap = crate::logfile::DEFAULT_MAX_BYTES * 2;
-    let status = if !path.exists() {
-        Status::Degraded
+
+    // Two different degradations that happen to share a status, kept apart so
+    // the reader is told which one they have. Both mean "why has no history".
+    let (status, detail) = if !path.exists() {
+        (
+            Status::Degraded,
+            format!("{} does not exist yet", path.display()),
+        )
     } else if total > cap + cap / 10 {
-        Status::Degraded
+        (
+            Status::Degraded,
+            format!(
+                "{} across both generations, over the {} cap — rotation is not running",
+                crate::bytes_phrase(total),
+                crate::bytes_phrase(cap)
+            ),
+        )
     } else {
-        Status::Ok
-    };
-    Check {
-        name: "incident log",
-        status,
-        detail: if path.exists() {
+        (
+            Status::Ok,
             format!(
                 "{} across both generations, cap {}",
                 crate::bytes_phrase(total),
                 crate::bytes_phrase(cap)
-            )
-        } else {
-            format!("{} does not exist yet", path.display())
-        },
+            ),
+        )
+    };
+
+    Check {
+        name: "incident log",
+        status,
+        detail,
         consequence: "Nothing has been recorded yet, or the log is over its cap — \
                       `stallwatch why` reads this file.",
     }

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.2 — 2026-08-31
+
+Splits the two incident-log degradations that shared a status, so the report says
+which one you have — the file does not exist yet, or rotation is not keeping it
+under its cap. Caught by CI's clippy, which runs a newer toolchain than the
+machine it was written on.
+
 ## v0.2.1 — 2026-08-31
 
 `stallwatch doctor` also checks whether anything is actually watching: the daemon

@@ -18,7 +18,7 @@ resolver = "3"
 members = ["crates/core", "crates/cli"]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -27,7 +27,7 @@ categories = ["command-line-utilities", "os::linux-apis"]
 keywords = ["psi", "cgroup", "diagnostics", "performance", "linux"]
 
 [workspace.dependencies]
-stallwatch-core = { version = "0.2.1", path = "crates/core" }
+stallwatch-core = { version = "0.2.2", path = "crates/core" }
 
 [profile.release]
 opt-level = "s"
