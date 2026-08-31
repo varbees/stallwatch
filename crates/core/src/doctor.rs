@@ -66,6 +66,11 @@ pub struct Check {
 }
 
 /// Probe everything the engine depends on.
+///
+/// Two groups, both needed to answer "is this actually working here". The
+/// kernel checks say what can be seen; the installation checks say whether
+/// anything is watching and whether it is behaving. A tool that passes every
+/// capability probe while its daemon is dead still tells you nothing.
 pub fn diagnose() -> Vec<Check> {
     vec![
         cgroup_v2(),
@@ -76,7 +81,88 @@ pub fn diagnose() -> Vec<Check> {
         system_trigger(),
         cgroup_trigger(),
         delayacct(),
+        daemon(),
+        incident_log(),
     ]
+}
+
+/// Is anything actually recording?
+///
+/// The live CLI can only ever answer "what is happening now". Every question a
+/// person actually asks is retrospective, and that needs the daemon to have
+/// been running before the freeze.
+fn daemon() -> Check {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    let path = crate::ipc::socket_path();
+    let probe = UnixStream::connect(&path).and_then(|mut s| {
+        s.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+        s.write_all(b"PING\n")?;
+        let mut line = String::new();
+        BufReader::new(s).read_line(&mut line)?;
+        Ok(line)
+    });
+    match probe {
+        Ok(reply) if reply.trim() == "PONG" => Check {
+            name: "stallwatchd",
+            status: Status::Ok,
+            detail: format!("responding on {}", path.display()),
+            consequence: "",
+        },
+        Ok(reply) => Check {
+            name: "stallwatchd",
+            status: Status::Degraded,
+            detail: format!("answered {:?}, expected PONG", reply.trim()),
+            consequence: "Something else owns the socket. `stallwatch --since` and \
+                          `stallwatch why` will not work.",
+        },
+        Err(e) => Check {
+            name: "stallwatchd",
+            status: Status::Degraded,
+            detail: format!("not reachable at {} ({e})", path.display()),
+            consequence: "Nothing is recording, so `stallwatch why` has no history to read \
+                          — a freeze is over before you can type. Start it with: \
+                          systemctl --user enable --now stallwatchd",
+        },
+    }
+}
+
+/// Is the recording bounded?
+///
+/// This file reached 364 MB in 30 days before it had a cap. A diagnostic that
+/// fills the disk it is diagnosing has become the problem it was installed to
+/// find, so its size is now something the tool reports on itself.
+fn incident_log() -> Check {
+    let path = crate::ipc::incident_log_path();
+    let live = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let old = fs::metadata(crate::logfile::previous_generation(&path))
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let total = live + old;
+    let cap = crate::logfile::DEFAULT_MAX_BYTES * 2;
+    let status = if !path.exists() {
+        Status::Degraded
+    } else if total > cap + cap / 10 {
+        Status::Degraded
+    } else {
+        Status::Ok
+    };
+    Check {
+        name: "incident log",
+        status,
+        detail: if path.exists() {
+            format!(
+                "{} across both generations, cap {}",
+                crate::bytes_phrase(total),
+                crate::bytes_phrase(cap)
+            )
+        } else {
+            format!("{} does not exist yet", path.display())
+        },
+        consequence: "Nothing has been recorded yet, or the log is over its cap — \
+                      `stallwatch why` reads this file.",
+    }
 }
 
 fn cgroup_v2() -> Check {

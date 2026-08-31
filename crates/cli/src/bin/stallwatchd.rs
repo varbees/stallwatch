@@ -421,9 +421,14 @@ fn main() {
     if let Ok(n) = notifier.lock()
         && n.enabled
     {
+        // Describe the policy that actually runs. Peak pressure stopped being a
+        // gate in v0.2.0 — 70% of a 400ms capture was cleared by 70% of every
+        // stall ever recorded — and a startup line advertising the old rule is
+        // the same class of quiet untruth this release exists to remove.
         eprintln!(
-            "stallwatchd: announcing stalls above {:.0}% peak, at most one per {}s",
-            n.min_peak,
+            "stallwatchd: announcing an episode of {}s+ stall within {}s, at most one per {}s",
+            n.episode_min_stall.as_secs(),
+            n.episode_window.as_secs(),
             n.cooldown.as_secs()
         );
     }
