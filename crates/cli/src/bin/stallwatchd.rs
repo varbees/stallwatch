@@ -373,6 +373,28 @@ fn main() {
         history_secs
     );
 
+    // Say up front what this machine actually permits.
+    //
+    // The engine spent 29 days reporting 520,155 incidents without ever naming
+    // a cause, because the file it read causes from was unreadable and nothing
+    // announced it. One line per start is what makes that visible.
+    {
+        let checks = stallwatch_core::doctor::diagnose();
+        eprintln!(
+            "stallwatchd: {}",
+            stallwatch_core::doctor::summary_line(&checks)
+        );
+        for c in checks
+            .iter()
+            .filter(|c| c.status == stallwatch_core::doctor::Status::Failed)
+        {
+            eprintln!(
+                "stallwatchd: {} FAILED: {} — {}",
+                c.name, c.detail, c.consequence
+            );
+        }
+    }
+
     // Capture.
     //
     // Preferred mode is event-driven: register a PSI trigger per resource and

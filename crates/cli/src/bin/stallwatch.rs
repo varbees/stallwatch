@@ -16,6 +16,7 @@ USAGE:
   stallwatch --since SECS [--json]
   stallwatch --filter EXPR
   stallwatch why [--filter EXPR] [-n COUNT]
+  stallwatch doctor [--json]
   stallwatch config
 
 OPTIONS:
@@ -32,20 +33,103 @@ OPTIONS:
   --fields       list every field a filter can name
   -n COUNT       with `why`, how many incidents to show (default 1)
   -h, --help     this text
+  -V, --version  print the version and exit
 
 COMMANDS:
   why            what actually stopped you, in plain words, from what
                  stallwatchd recorded while it was happening
+  doctor         what this machine lets stallwatch see, and what that costs
   config         every setting, its value, and which file or flag set it
 
 Reads /proc and /sys as the invoking user. No privileges required.
 ";
+
+/// Flags that consume the following argument, so their value is not itself
+/// mistaken for an unknown flag.
+const VALUED: &[&str] = &["--window", "--since", "--filter", "-n"];
+/// Every flag this binary understands.
+const FLAGS: &[&str] = &[
+    "--window",
+    "--watch",
+    "--since",
+    "--processes",
+    "--json",
+    "--filter",
+    "--fields",
+    "-n",
+    "-h",
+    "--help",
+    "-V",
+    "--version",
+];
+/// Every subcommand.
+const COMMANDS: &[&str] = &["why", "doctor", "config"];
+
+/// Reject anything unrecognised instead of silently doing something else.
+///
+/// A mistyped flag used to fall through to the default one-second report, so
+/// `stallwatch --pocesses` printed a perfectly plausible answer to a question
+/// nobody asked. Silence is the wrong response to input that cannot be honoured
+/// — and it is disqualifying for distribution packaging, where `--version` is
+/// the first thing any tool is asked for.
+fn reject_unknown(args: &[String]) {
+    let mut skip_next = false;
+    for (i, a) in args.iter().enumerate() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if VALUED.contains(&a.as_str()) {
+            skip_next = true;
+            continue;
+        }
+        if a.starts_with('-') {
+            if !FLAGS.contains(&a.as_str()) {
+                eprintln!("stallwatch: unknown option: {a}");
+                eprintln!("Run `stallwatch --help` for the options that exist.");
+                std::process::exit(2);
+            }
+            continue;
+        }
+        // A bare word is only meaningful as the first argument, as a command.
+        if i == 0 && COMMANDS.contains(&a.as_str()) {
+            continue;
+        }
+        eprintln!("stallwatch: unexpected argument: {a}");
+        eprintln!("Run `stallwatch --help` for usage.");
+        std::process::exit(2);
+    }
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.iter().any(|a| a == "-h" || a == "--help") {
         print!("{USAGE}");
+        return;
+    }
+
+    if args.iter().any(|a| a == "-V" || a == "--version") {
+        println!("stallwatch {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
+    reject_unknown(&args);
+
+    if args.first().is_some_and(|a| a == "doctor") {
+        let checks = stallwatch_core::doctor::diagnose();
+        if args.iter().any(|a| a == "--json") {
+            println!("{}", stallwatch_core::doctor::to_json(&checks));
+        } else {
+            print!("{}", stallwatch_core::doctor::to_text(&checks));
+        }
+        // A missing capability is a real failure and scripts should see it.
+        let failed = checks
+            .iter()
+            .any(|c| c.status == stallwatch_core::doctor::Status::Failed);
+        if failed {
+            std::process::exit(1);
+        }
         return;
     }
 

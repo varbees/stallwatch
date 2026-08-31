@@ -41,6 +41,7 @@ use std::time::Duration;
 pub mod attribution;
 pub mod cgroup;
 pub mod config;
+pub mod doctor;
 pub mod filter;
 pub mod incident;
 pub mod iostat;
@@ -483,7 +484,7 @@ pub fn bytes_phrase(bytes: u64) -> String {
 
 /// Minimal RFC 8259 string escaping. Cgroup paths can legitimately contain
 /// backslashes (systemd's `\x2d` encoding), so this is not theoretical.
-fn json_str(s: &str) -> String {
+pub(crate) fn json_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
