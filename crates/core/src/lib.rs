@@ -48,6 +48,7 @@ pub mod incident;
 pub mod iostat;
 pub mod ipc;
 pub mod json;
+pub mod logfile;
 pub mod metrics;
 pub mod notify;
 pub mod pathology;

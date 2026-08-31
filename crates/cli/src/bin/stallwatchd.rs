@@ -97,12 +97,11 @@ fn fire_rules(rules: &[stallwatch_core::config::Rule], incident: &Incident) {
         }
 
         if let Some(path) = &rule.action.log {
-            use std::io::Write as _;
-            let written = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .and_then(|mut f| writeln!(f, "{}", incident.to_jsonl()));
+            let written = stallwatch_core::logfile::append_line(
+                path,
+                &incident.to_jsonl(),
+                stallwatch_core::logfile::DEFAULT_MAX_BYTES,
+            );
             if let Err(e) = written {
                 eprintln!(
                     "stallwatchd: rule `{}` cannot write {}: {e}",
@@ -120,7 +119,6 @@ fn fire_rules(rules: &[stallwatch_core::config::Rule], incident: &Incident) {
 /// log file is worse than one that quietly keeps watching. Failures are
 /// reported once rather than on every capture.
 fn append_incident(incident: &Incident) {
-    use std::io::Write as _;
     use std::sync::atomic::{AtomicBool, Ordering};
     static COMPLAINED: AtomicBool = AtomicBool::new(false);
 
@@ -129,11 +127,11 @@ fn append_incident(incident: &Incident) {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
-        writeln!(f, "{}", incident.to_jsonl())
+        stallwatch_core::logfile::append_line(
+            &path,
+            &incident.to_jsonl(),
+            stallwatch_core::logfile::DEFAULT_MAX_BYTES,
+        )
     };
     if let Err(e) = write()
         && !COMPLAINED.swap(true, Ordering::Relaxed)
