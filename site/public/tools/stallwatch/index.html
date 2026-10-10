@@ -26,7 +26,7 @@
   --void:#0a0c11;      /* deep blue-black; never pure #000 */
   --panel:#0f131b;
   --line:#1c2330;
-  --dim:#67748a;       /* the calm reading — deliberately drained */
+  --dim:#7c89a0;       /* the calm reading — deliberately drained */
   --text:#c9d1dd;
   --bright:#e8edf5;
   --ember:#ff7a45;     /* the one accent: blocked time */
@@ -71,7 +71,7 @@ h1 .lie{color:var(--dim)}
 .instr-hd{
   display:flex; justify-content:space-between; gap:1rem; flex-wrap:wrap;
   padding:.6rem .9rem; border-bottom:1px solid var(--line);
-  font-size:11.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--dim);
+  font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--dim);
 }
 .row{display:grid; grid-template-columns:12ch 1fr; gap:.9rem; align-items:center; padding:1rem .9rem}
 .row + .row{border-top:1px solid var(--line)}
@@ -110,7 +110,7 @@ h1 .lie{color:var(--dim)}
 .cmd .p{color:var(--ember); user-select:none}
 .copy{
   flex:none; background:transparent; border:1px solid var(--line); color:var(--dim);
-  font:inherit; font-size:11.5px; padding:.2rem .6rem; border-radius:3px; cursor:pointer;
+  font:inherit; font-size:12px; padding:.2rem .6rem; border-radius:3px; cursor:pointer;
 }
 .copy:hover{color:var(--bright); border-color:var(--dim)}
 .copy[data-done="1"]{color:var(--ember); border-color:var(--ember)}
@@ -267,7 +267,7 @@ footer a{color:var(--dim)}
   <div class="wrap">
     <div class="rule"><h2>what it tells you</h2></div>
     <figure>
-<pre><span class="p">$</span> stallwatch
+<pre tabindex="0"><span class="p">$</span> stallwatch
 
 Over the last 2.0s, these units stalled the system:
 
