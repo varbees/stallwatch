@@ -13,7 +13,12 @@ public/
 
 ## Deploy
 
-Static assets on Cloudflare Workers. No Worker script is involved.
+Static assets on Cloudflare Workers, with a small Worker script (`worker.js`,
+the `main` entry in `wrangler.jsonc`) in front of them. It runs first on every
+request (`run_worker_first`), 301-redirects the old `stallwatch.antharmaya.com`
+hostname to `antharmaya.com/tools/stallwatch` so the published installer URL
+keeps working, and passes everything else to the assets binding.
+`worker.test.mjs` covers the redirect.
 
 ```sh
 cd site

@@ -3,6 +3,13 @@
 [![CI](https://github.com/varbees/stallwatch/actions/workflows/ci.yml/badge.svg)](https://github.com/varbees/stallwatch/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/stallwatch.svg)](https://crates.io/crates/stallwatch)
 
+> **Archived on 2026-10-01. Shipped and finished, not abandoned mid-way.**
+> The final release is **v0.2.2**, on [crates.io](https://crates.io/crates/stallwatch/0.2.2)
+> and as a [GitHub release](https://github.com/varbees/stallwatch/releases/tag/v0.2.2)
+> with checksummed static binaries. Both install paths below keep working. There is
+> no further development: the repository is read-only, and issues and pull requests
+> are closed. The code is MIT/Apache-2.0, so a fork is welcome.
+
 **Your Linux desktop freezes. `htop` says the CPU is idle and you have free RAM. So what stopped?**
 
 ![stallwatch diagnosing a real disk stall](demo/demo.gif)
@@ -355,6 +362,8 @@ host's values with no indication that they aren't its own.
   deliberate caution above.
 
 ## Roadmap
+
+Closed with the archive. Items 1–5 shipped; item 6 was not started.
 
 1. ~~Daemon with a ring buffer~~ — done
 2. ~~D-Bus interface~~ — solved with Varlink instead, at zero dependency cost

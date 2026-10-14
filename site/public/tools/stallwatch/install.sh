@@ -74,7 +74,7 @@ main() {
     bin_dir="${STALLWATCH_BIN_DIR:-$HOME/.local/bin}"
 
     version="${STALLWATCH_VERSION:-$(latest_version)}"
-    [ -n "$version" ] || err "could not determine the latest release — set STALLWATCH_VERSION=v0.1.0 to pin one"
+    [ -n "$version" ] || err "could not determine the latest release — set STALLWATCH_VERSION=v0.2.2 (the final release) to pin it"
 
     # Tag is v-prefixed; the artifact names are not.
     bare="${version#v}"
